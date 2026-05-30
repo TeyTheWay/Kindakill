@@ -584,36 +584,80 @@ export default function GameCanvas() {
             const inAtk=distP<cfg.atr;
             (e as unknown as Record<string,unknown>).facingRight=(dxp>0);
 
-            if(e.type==='grunt' || e.type==='knight') {
-              // ── MELEE ── charge → wind-up → strike
+            if(e.type==='grunt') {
+              // ── GRUNT: DIVE ATTACK ── wind-up → leap arc at player
               if(inDet) {
-                if(inAtk) {
-                  e.vx*=0.72; // slow down during wind-up
-                  if(e.hesTimer<=0 && e.atkTimer<=0) e.hesTimer=cfg.hes;
+                if(e.chargeTimer>0) {
+                  // Mid-dive: let physics carry it, don't damp vx
+                  e.chargeTimer-=dt;
+                } else if(inAtk && e.atkTimer<=0) {
+                  e.vx*=0.65; // slow to wind up
+                  if(e.hesTimer<=0) e.hesTimer=cfg.hes;
                   if(e.hesTimer>0) {
                     e.hesTimer-=dt;
+                    // wind-up crouch flash
+                    if(Math.floor(e.hesTimer*14)%2===0)
+                      spawnParticles(gs,ex,ey+e.h*0.5,1,255,80,60,80);
                     if(e.hesTimer<=0) {
                       e.hesTimer=0;
                       if(p.parryActive){
-                        e.stunned=(e.type==='knight'?1.8:1.2);
+                        e.stunned=1.2;
                         spawnParticles(gs,ex,ey,9,100,200,255,230);
-                      } else if(p.inv<=0){
-                        p.hp-=cfg.adm; p.inv=INV_DUR;
-                        spawnParticles(gs,px,py,7,255,80,80,170);
-                        if(p.hp<=0){ p.dead=true; gs.phase='dead'; }
+                      } else {
+                        // Launch dive: fast horizontal + upward arc
+                        e.vx=dxp/Math.abs(dxp||1)*cfg.spd*2.6;
+                        e.vy=-320;
+                        e.chargeTimer=0.55;
+                        e.grounded=false;
+                        spawnParticles(gs,ex,ey+e.h*0.5,8,255,100,50,180);
                       }
                       e.atkTimer=cfg.acd;
                     }
                   }
                 } else {
-                  // Chase
-                  const mspd=e.type==='knight'?cfg.spd*1.12:cfg.spd;
-                  e.vx=dxp/Math.abs(dxp||1)*mspd;
+                  e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
                   e.hesTimer=0;
                 }
               } else {
                 e.vx=e.dir*cfg.spd*0.45;
-                e.hesTimer=0;
+                e.hesTimer=0; e.chargeTimer=0;
+              }
+
+            } else if(e.type==='knight') {
+              // ── KNIGHT: STRAIGHT SLICE DASH ── wind-up → horizontal rush
+              if(inDet) {
+                if(e.chargeTimer>0) {
+                  // Mid-slice: keep direction, full dash speed, no friction
+                  e.chargeTimer-=dt;
+                  if(e.chargeTimer<=0) e.chargeTimer=0;
+                } else if(inAtk && e.atkTimer<=0) {
+                  e.vx*=0.3; // brake to wind up
+                  if(e.hesTimer<=0) e.hesTimer=cfg.hes;
+                  if(e.hesTimer>0) {
+                    e.hesTimer-=dt;
+                    if(Math.floor(e.hesTimer*14)%2===0)
+                      spawnParticles(gs,ex,ey-e.h*0.3,2,255,200,60,100);
+                    if(e.hesTimer<=0) {
+                      e.hesTimer=0;
+                      if(p.parryActive){
+                        e.stunned=1.8;
+                        spawnParticles(gs,ex,ey,9,100,200,255,230);
+                      } else {
+                        // Horizontal slice dash — straight line, no vy change
+                        e.vx=dxp/Math.abs(dxp||1)*cfg.spd*2.8;
+                        e.chargeTimer=0.22;
+                        spawnParticles(gs,ex,ey,10,255,200,40,220);
+                      }
+                      e.atkTimer=cfg.acd;
+                    }
+                  }
+                } else {
+                  e.vx=dxp/Math.abs(dxp||1)*cfg.spd*1.12;
+                  e.hesTimer=0;
+                }
+              } else {
+                e.vx=e.dir*cfg.spd*0.45;
+                e.hesTimer=0; e.chargeTimer=0;
               }
 
             } else if(e.type==='shotgunner') {
@@ -712,13 +756,28 @@ export default function GameCanvas() {
           if(e.x<gs.player.x-GW*1.2) e.dead=true;
         }
 
+        // Contact damage — all enemies damage player on touch
+        if(!p.dead && p.inv<=0) {
+          for(const e of gs.enemies) {
+            if(e.dead) continue;
+            if(aabb(e.x,e.y,e.w,e.h,p.x,p.y,p.w,p.h)) {
+              const ecfg2=ECFG[e.type];
+              p.hp-=ecfg2.adm*(ecfg2.melee?0.6:0.4);
+              p.inv=INV_DUR;
+              spawnParticles(gs,p.x+p.w/2,p.y+p.h/2,5,255,80,80,150);
+              if(p.hp<=0){ p.dead=true; gs.phase='dead'; }
+              break;
+            }
+          }
+        }
+
         // Remove dead enemies, grant HP on kill
         for(const e of gs.enemies) {
           if(e.dead || e.hp<=0) {
             if(!e.dead){
               gs.score+=e.pts; gs.kills++;
               spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,14,200,50,50,230);
-              p.hp=Math.min(p.maxHp,p.hp+14); // health on kill
+              p.hp=Math.min(p.maxHp,p.hp+28); // health on kill
             }
             e.dead=true;
           }
@@ -903,7 +962,7 @@ export default function GameCanvas() {
               e.hp-=b.dmg;
               spawnParticles(gs,b.x,b.y,4,200,50,50,150);
               b.hp=0; hitSomething=true;
-              if(e.hp<=0){ e.dead=true; gs.score+=e.pts; gs.kills++; spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,12,200,50,50,220); }
+              if(e.hp<=0){ e.dead=true; gs.score+=e.pts; gs.kills++; p.hp=Math.min(p.maxHp,p.hp+28); spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,12,200,50,50,220); }
               break;
             }
           }
