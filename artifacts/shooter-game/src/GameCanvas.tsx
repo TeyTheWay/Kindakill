@@ -45,6 +45,7 @@ interface Player extends Entity {
   weapon:number; shootCd:number;
   grapple:boolean; grappleX:number; grappleY:number; grappleOn:boolean; grappleLen:number;
   inv:number; dead:boolean; facingRight:boolean;
+  sliding:boolean; slideCd:number; slideTimer:number;
 }
 
 interface Enemy extends Entity {
@@ -64,7 +65,7 @@ interface Boss extends Entity {
 
 interface Bullet extends Entity {
   id:number; fromPlayer:boolean; dmg:number;
-  btype:string; fuse:number; bounced:number;
+  btype:string; fuse:number; bounced:number; shooterId:number;
 }
 
 interface Particle {
@@ -231,7 +232,7 @@ function spawnBoss(gs:GS) {
 }
 
 // ─── BULLET SPAWNING ─────────────────────────────────────────────────────────
-function spawnBullet(gs:GS,x:number,y:number,dx:number,dy:number,fromPlayer:boolean,weaponIdx:number) {
+function spawnBullet(gs:GS,x:number,y:number,dx:number,dy:number,fromPlayer:boolean,weaponIdx:number,shooterId=-2) {
   const w=WEAPONS[weaponIdx];
   const len=Math.hypot(dx,dy)||1;
   const nx=dx/len, ny=dy/len;
@@ -243,12 +244,12 @@ function spawnBullet(gs:GS,x:number,y:number,dx:number,dy:number,fromPlayer:bool
       x:x-3,y:y-3,vx:bvx,vy:bvy,w:6,h:6,
       hp:1,maxHp:1,fromPlayer,dmg:w.dmg,
       btype:weaponIdx===0?'pistol':weaponIdx===1?'shotgun':'grenade',
-      fuse:w.fuse,bounced:0,
+      fuse:w.fuse,bounced:0,shooterId,
     });
   }
 }
 
-function spawnEnemyBullet(gs:GS,x:number,y:number,dx:number,dy:number,dmg:number,spread=0.1) {
+function spawnEnemyBullet(gs:GS,x:number,y:number,dx:number,dy:number,dmg:number,spread=0.1,shooterId=-2) {
   const len=Math.hypot(dx,dy)||1;
   const nx=dx/len, ny=dy/len;
   const angle=Math.atan2(ny,nx)+(Math.random()-0.5)*spread;
@@ -256,11 +257,11 @@ function spawnEnemyBullet(gs:GS,x:number,y:number,dx:number,dy:number,dmg:number
     id:gs.nextBulletId++,
     x,y,vx:Math.cos(angle)*420,vy:Math.sin(angle)*420,
     w:8,h:8,hp:1,maxHp:1,fromPlayer:false,dmg,
-    btype:'enemy',fuse:0,bounced:0,
+    btype:'enemy',fuse:0,bounced:0,shooterId,
   });
 }
 
-function spawnEnemyGrenade(gs:GS,x:number,y:number,tx:number,ty:number) {
+function spawnEnemyGrenade(gs:GS,x:number,y:number,tx:number,ty:number,shooterId=-2) {
   const dx=tx-x, dy=ty-y;
   const dist=Math.hypot(dx,dy)||1;
   const flatAngle=Math.atan2(dy,dx);
@@ -270,17 +271,17 @@ function spawnEnemyGrenade(gs:GS,x:number,y:number,tx:number,ty:number) {
     id:gs.nextBulletId++,
     x,y,vx:Math.cos(lobAngle)*spd,vy:Math.sin(lobAngle)*spd,
     w:8,h:8,hp:1,maxHp:1,fromPlayer:false,dmg:22,
-    btype:'grenade',fuse:3.0,bounced:0,
+    btype:'grenade',fuse:3.0,bounced:0,shooterId,
   });
 }
 
-function spawnSeraphimLaser(gs:GS,x:number,y:number,tx:number,ty:number) {
+function spawnSeraphimLaser(gs:GS,x:number,y:number,tx:number,ty:number,shooterId=-2) {
   const angle=Math.atan2(ty-y,tx-x)+(Math.random()-0.5)*0.06;
   gs.bullets.push({
     id:gs.nextBulletId++,
     x,y,vx:Math.cos(angle)*920,vy:Math.sin(angle)*920,
     w:6,h:6,hp:1,maxHp:1,fromPlayer:false,dmg:20,
-    btype:'laser',fuse:0,bounced:0,
+    btype:'laser',fuse:0,bounced:0,shooterId,
   });
 }
 
@@ -311,6 +312,7 @@ function initGame(): GS {
     weapon:0,shootCd:0,
     grapple:false,grappleX:0,grappleY:0,grappleOn:false,grappleLen:0,
     inv:0,dead:false,facingRight:true,
+    sliding:false,slideCd:0,slideTimer:0,
   };
   return {
     player, enemies:[], boss:null, bullets:[], platforms:plats, particles:[],
@@ -396,12 +398,17 @@ export default function GameCanvas() {
 
       // ── INPUT / PLAYER UPDATE ──────────────────────────────────────────
       if(gs.phase==='playing' && !p.dead) {
-        // Horizontal
+        // Horizontal (blocked during slide)
         const moveL=keys.has('KeyA')||keys.has('ArrowLeft');
         const moveR=keys.has('KeyD')||keys.has('ArrowRight');
-        if(moveR){ p.vx=PLAYER_SPEED; p.facingRight=true; }
-        else if(moveL){ p.vx=-PLAYER_SPEED; p.facingRight=false; }
-        else p.vx*=0.85;
+        if(!p.sliding) {
+          if(moveR){ p.vx=PLAYER_SPEED; p.facingRight=true; }
+          else if(moveL){ p.vx=-PLAYER_SPEED; p.facingRight=false; }
+          else p.vx*=0.85;
+        } else {
+          // Slide: override vx with boost
+          p.vx=(p.facingRight?1:-1)*PLAYER_SPEED*2.4;
+        }
 
         // Jump
         const justJump=(keys.has('Space')||keys.has('KeyW')||keys.has('ArrowUp')) && !prevKeysRef.current.has('Space') && !prevKeysRef.current.has('KeyW') && !prevKeysRef.current.has('ArrowUp');
@@ -417,6 +424,19 @@ export default function GameCanvas() {
         if(justParry && !p.parryActive) { p.parryActive=true; p.parryTimer=PARRY_DUR; p.parryFlash=PARRY_DUR; }
         if(p.parryActive){ p.parryTimer-=dt; if(p.parryTimer<=0){ p.parryActive=false; p.parryTimer=0; } }
         if(p.parryFlash>0) p.parryFlash-=dt;
+
+        // Slide (Q) — ground-level speed dash with brief i-frames
+        if(p.slideCd>0) p.slideCd-=dt;
+        const justSlide=keys.has('KeyQ') && !prevKeysRef.current.has('KeyQ');
+        if(justSlide && p.grounded && !p.sliding && p.slideCd<=0) {
+          p.sliding=true; p.slideTimer=0.45; p.slideCd=1.1;
+          p.inv=Math.max(p.inv,0.25);
+          spawnParticles(gs,p.x+p.w/2,p.y+p.h,8,180,180,200,100);
+        }
+        if(p.sliding) {
+          p.slideTimer-=dt;
+          if(p.slideTimer<=0 || !p.grounded) { p.sliding=false; p.slideTimer=0; }
+        }
 
         // Weapon switch
         if(keys.has('Digit1')&&!prevKeysRef.current.has('Digit1')) p.weapon=0;
@@ -449,7 +469,7 @@ export default function GameCanvas() {
               vy:ny2*throwSpd,
               w:8,h:8,hp:1,maxHp:1,fromPlayer:true,
               dmg:WEAPONS[2].dmg, btype:'grenade',
-              fuse:WEAPONS[2].fuse, bounced:0,
+              fuse:WEAPONS[2].fuse, bounced:0, shooterId:-2,
             });
             p.shootCd=WEAPONS[2].cd;
             spawnParticles(gs,pcx,pcy,3,100,255,50,130);
@@ -609,7 +629,7 @@ export default function GameCanvas() {
                   if(e.hesTimer>0) {
                     e.hesTimer-=dt;
                     if(e.hesTimer<=0) {
-                      for(let i=0;i<3;i++) spawnEnemyBullet(gs,ex,ey+e.h*0.3,dxp,dyp,cfg.adm,0.18);
+                      for(let i=0;i<3;i++) spawnEnemyBullet(gs,ex,ey+e.h*0.3,dxp,dyp,cfg.adm,0.18,e.id);
                       e.shootCd=cfg.acd; e.hesTimer=0;
                       spawnParticles(gs,ex,ey,5,60,120,255,150);
                     }
@@ -633,7 +653,7 @@ export default function GameCanvas() {
                     if(Math.floor(e.hesTimer*10)%2===0)
                       spawnParticles(gs,ex,ey-e.h*0.5,1,255,220,50,60);
                     if(e.hesTimer<=0) {
-                      spawnEnemyGrenade(gs,ex,ey-e.h*0.35,px,py);
+                      spawnEnemyGrenade(gs,ex,ey-e.h*0.35,px,py,e.id);
                       e.shootCd=cfg.acd; e.hesTimer=0;
                       spawnParticles(gs,ex,ey,5,255,200,50,130);
                     }
@@ -662,8 +682,8 @@ export default function GameCanvas() {
                       spawnParticles(gs,ex,ey,2,255,230,100,80);
                     if(e.hesTimer<=0) {
                       // Fire 2 laser beams
-                      spawnSeraphimLaser(gs,ex,ey+e.h*0.1,px,py);
-                      spawnSeraphimLaser(gs,ex,ey+e.h*0.1,px,py);
+                      spawnSeraphimLaser(gs,ex,ey+e.h*0.1,px,py,e.id);
+                      spawnSeraphimLaser(gs,ex,ey+e.h*0.1,px,py,e.id);
                       e.shootCd=cfg.acd; e.hesTimer=0;
                       spawnParticles(gs,ex,ey,8,255,240,120,200);
                     }
@@ -763,7 +783,7 @@ export default function GameCanvas() {
         const shootCd=boss.phase===3?0.35:boss.phase===2?0.65:0.9;
         if(boss.shootCd<=0) {
           const weaponChoice=boss.phase===3?Math.floor(Math.random()*3):boss.phase===2?Math.floor(Math.random()*2):0;
-          spawnBullet(gs,bx,by,dxp,dyp,false,weaponChoice);
+          spawnBullet(gs,bx,by,dxp,dyp,false,weaponChoice,-1);
           boss.shootCd=shootCd;
           spawnParticles(gs,bx,by,3,255,60,60,100);
         }
@@ -845,9 +865,25 @@ export default function GameCanvas() {
         if(!b.fromPlayer && p.hp>0 && !p.dead) {
           if(aabb(b.x,b.y,b.w,b.h,p.x,p.y,p.w,p.h)) {
             if(p.parryActive) {
-              // Deflect
-              b.vx*=-1; b.vy*=-1; b.fromPlayer=true; b.btype='pistol';
-              spawnParticles(gs,b.x,b.y,6,100,200,255,200);
+              // Auto-aim deflect toward the shooter
+              const bCx=b.x+b.w/2, bCy=b.y+b.h/2;
+              let aimDx=-b.vx, aimDy=-b.vy;
+              if(b.shooterId===-1 && gs.boss && !gs.boss.dead) {
+                aimDx=gs.boss.x+gs.boss.w/2-bCx; aimDy=gs.boss.y+gs.boss.h/2-bCy;
+              } else if(b.shooterId>=0) {
+                const shooter=gs.enemies.find(e=>!e.dead&&e.id===b.shooterId);
+                if(shooter){ aimDx=shooter.x+shooter.w/2-bCx; aimDy=shooter.y+shooter.h/2-bCy; }
+                else {
+                  let nd=Infinity;
+                  for(const e2 of gs.enemies){ if(e2.dead) continue; const d=Math.hypot(e2.x+e2.w/2-bCx,e2.y+e2.h/2-bCy); if(d<nd){nd=d;aimDx=e2.x+e2.w/2-bCx;aimDy=e2.y+e2.h/2-bCy;} }
+                  if(gs.boss&&!gs.boss.dead){ const d=Math.hypot(gs.boss.x+gs.boss.w/2-bCx,gs.boss.y+gs.boss.h/2-bCy); if(d<nd){aimDx=gs.boss.x+gs.boss.w/2-bCx;aimDy=gs.boss.y+gs.boss.h/2-bCy;} }
+                }
+              }
+              const alen=Math.hypot(aimDx,aimDy)||1;
+              const spd2=Math.hypot(b.vx,b.vy)*1.5;
+              b.vx=aimDx/alen*spd2; b.vy=aimDy/alen*spd2;
+              b.fromPlayer=true; b.btype='pistol';
+              spawnParticles(gs,bCx,bCy,10,80,200,255,260);
             } else if(p.inv<=0) {
               p.hp-=b.dmg; p.inv=INV_DUR;
               spawnParticles(gs,p.x+p.w/2,p.y+p.h/2,5,255,80,80,150);
@@ -988,7 +1024,7 @@ export default function GameCanvas() {
         <div style={{position:'absolute',top:16,right:20,color:'#666',fontSize:12,textAlign:'right',lineHeight:1.8}}>
           WASD/ARROWS: Move | SPACE: Jump<br/>
           LMB: Shoot | RMB: Grapple<br/>
-          E: Parry | 1/2/3: Weapons
+          E: Parry | Q: Slide | 1/2/3: Weapons
         </div>
 
         {/* Boss HP bar */}
@@ -1050,15 +1086,55 @@ function drawV1(ctx:CanvasRenderingContext2D, p:Player, camX:number, camY:number
   const t=now*0.0095;
   const moving=Math.abs(p.vx)>20;
   const inAir=!p.grounded;
+  const isSlide=p.sliding;
   // Walk cycle: smooth sinusoidal limb swing
-  const legFwd=moving?Math.sin(t*1.9)*18:0;      // forward leg
-  const legBk=moving?Math.sin(t*1.9+Math.PI)*18:0; // back leg
-  const armFwd=moving?Math.sin(t*1.9+Math.PI)*14:0;
-  const armBk=moving?Math.sin(t*1.9)*10:0;
-  const bodyBob=moving?Math.abs(Math.sin(t*1.9))*2:0;
+  const legFwd=moving&&!isSlide?Math.sin(t*1.9)*18:0;
+  const legBk=moving&&!isSlide?Math.sin(t*1.9+Math.PI)*18:0;
+  const armFwd=moving&&!isSlide?Math.sin(t*1.9+Math.PI)*14:0;
+  const armBk=moving&&!isSlide?Math.sin(t*1.9)*10:0;
+  const bodyBob=moving&&!isSlide?Math.abs(Math.sin(t*1.9))*2:0;
   // Air pose — tuck legs
-  const airLeg=inAir?-10:0;
-  const torsoLean=moving?0.08:0; // slight forward lean when running
+  const airLeg=inAir&&!isSlide?-10:0;
+  const torsoLean=moving&&!isSlide?0.08:0;
+
+  // ── Slide crouch pose — draw entirely differently ──
+  if(isSlide) {
+    ctx.save();
+    ctx.translate(sx, sy);
+    if(!p.facingRight) ctx.scale(-1,1);
+    const skin2=isParry?'#c8e8ff':'#f5d0a0';
+    const cloth2=isParry?'#5588cc':'#2a4a7a';
+    const boot2=isParry?'#335588':'#1a1a2e';
+    ctx.shadowColor='#88ccff'; ctx.shadowBlur=12;
+    // Slide dust trail
+    ctx.globalAlpha=0.35;
+    ctx.fillStyle='#aabbcc';
+    ctx.beginPath(); ctx.ellipse(-12,-4,18,5,0,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+    // Body leaned forward, crouched
+    ctx.save(); ctx.rotate(0.7); // strong lean
+    ctx.fillStyle=cloth2;
+    ctx.fillRect(-6,-30,13,22); // torso
+    ctx.restore();
+    // Head
+    ctx.save(); ctx.rotate(0.6);
+    ctx.fillStyle=skin2; ctx.fillRect(4,-40,14,14);
+    ctx.fillStyle=cloth2; ctx.fillRect(4,-44,14,6);
+    ctx.restore();
+    // Legs (folded under)
+    ctx.fillStyle=cloth2;
+    ctx.fillRect(-6,-12,10,10);   // thigh
+    ctx.fillRect(-4,-4,8,8);
+    ctx.fillStyle=boot2;
+    ctx.fillRect(-8,-6,16,7);     // boot flat on ground
+    // Gun arm stretched forward
+    ctx.fillStyle=cloth2;
+    ctx.fillRect(6,-28,12,6);
+    ctx.fillStyle='#555';
+    ctx.fillRect(17,-30,12,5);
+    ctx.restore();
+    return;
+  }
 
   ctx.save();
   ctx.translate(sx, sy-bodyBob);
@@ -1747,47 +1823,111 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
   const camX=gs.camX, camY=gs.camY;
   const W=ctx.canvas.width, H=ctx.canvas.height;
 
-  // ── Background ──
-  ctx.fillStyle='#06060f';
-  ctx.fillRect(0,0,W,H);
-
-  // Scrolling stars (parallax)
-  for(let i=0;i<90;i++) {
-    const sx2=((i*2381+i*53)*1.0 - camX*0.12)%W;
-    const sy2=(i*1171+i*77)%H;
-    const bright=i%5===0?0.5:0.2;
-    ctx.fillStyle=`rgba(255,255,255,${bright})`;
-    ctx.fillRect((sx2+W)%W,sy2,i%7===0?2:1,i%7===0?2:1);
-  }
-  // Background gradient
+  // ── ULTRAKILL-style Background ──
+  // Deep crimson-black sky
   const bgGrad=ctx.createLinearGradient(0,0,0,H);
-  bgGrad.addColorStop(0,'rgba(8,4,28,0)');
-  bgGrad.addColorStop(1,'rgba(16,6,48,0.5)');
+  bgGrad.addColorStop(0,'#0a0000');
+  bgGrad.addColorStop(0.5,'#1a0303');
+  bgGrad.addColorStop(1,'#2a0505');
   ctx.fillStyle=bgGrad;
   ctx.fillRect(0,0,W,H);
+
+  // Far parallax: gothic arch silhouettes
+  ctx.save();
+  ctx.globalAlpha=0.18;
+  const archOffX=(camX*0.08)%320;
+  for(let a=-1;a<Math.ceil(W/320)+1;a++) {
+    const ax=a*320-archOffX;
+    const archW=80, archH=180;
+    ctx.fillStyle='#1c0404';
+    // Column left
+    ctx.fillRect(ax+20,H-archH,18,archH);
+    // Column right
+    ctx.fillRect(ax+archW-6,H-archH,18,archH);
+    // Pointed arch top (triangle)
+    ctx.beginPath();
+    ctx.moveTo(ax+20,H-archH);
+    ctx.lineTo(ax+archW+12,H-archH);
+    ctx.lineTo(ax+archW/2+12,H-archH-50);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // Mid parallax: dark stone column silhouettes
+  ctx.save();
+  ctx.globalAlpha=0.28;
+  const colOffX=(camX*0.22)%200;
+  for(let c=-1;c<Math.ceil(W/200)+2;c++) {
+    const cx2=c*200-colOffX;
+    const colH=80+(c%3)*30;
+    ctx.fillStyle='#150202';
+    ctx.fillRect(cx2+30,H-colH,24,colH);
+    // Capital top
+    ctx.fillRect(cx2+22,H-colH-8,40,8);
+  }
+  ctx.restore();
+
+  // Fog layer bottom
+  const fogGrad=ctx.createLinearGradient(0,H-90,0,H);
+  fogGrad.addColorStop(0,'rgba(80,10,10,0)');
+  fogGrad.addColorStop(1,'rgba(80,10,10,0.32)');
+  ctx.fillStyle=fogGrad;
+  ctx.fillRect(0,H-90,W,90);
+
+  // Ground line (dark basalt floor)
+  const gndY=wy(GROUND_Y);
+  ctx.fillStyle='#1a0404';
+  ctx.fillRect(0,gndY,W,H-gndY);
+  // Brick lines on ground
+  ctx.strokeStyle='rgba(80,20,20,0.35)';
+  ctx.lineWidth=1;
+  const brickW=64, brickH=20;
+  const bOff=(camX*1.0)%brickW;
+  for(let row=0;row*brickH<H-gndY;row++) {
+    const ry=gndY+row*brickH;
+    const xShift=row%2===0?0:brickW/2;
+    for(let col=-1;col<Math.ceil(W/brickW)+2;col++) {
+      ctx.strokeRect(col*brickW+xShift-bOff,ry,brickW,brickH);
+    }
+  }
+  // Ground top crimson line
+  ctx.fillStyle='rgba(200,30,30,0.5)';
+  ctx.fillRect(0,gndY,W,2);
 
   function wx(x:number){ return x-camX; }
   function wy(y:number){ return y-camY; }
 
-  // ── Platforms ──
+  // ── ULTRAKILL-style Platforms ──
   for(const plat of gs.platforms) {
     const px=wx(plat.x), py=wy(plat.y);
-    // Glow under platform
-    ctx.fillStyle='rgba(80,120,255,0.07)';
-    ctx.fillRect(px,py+plat.h,plat.w,8);
-    // Main platform
-    const pgrad=ctx.createLinearGradient(0,py,0,py+plat.h);
-    pgrad.addColorStop(0,'#3a4055');
-    pgrad.addColorStop(1,'#1e2235');
-    ctx.fillStyle=pgrad;
-    ctx.fillRect(px,py,plat.w,plat.h);
-    // Top edge highlight
-    ctx.fillStyle='rgba(100,130,255,0.45)';
-    ctx.fillRect(px,py,plat.w,2);
-    // Border
-    ctx.strokeStyle='#4a5080';
+    // Shadow/drip below
+    const drip=ctx.createLinearGradient(0,py+plat.h,0,py+plat.h+18);
+    drip.addColorStop(0,'rgba(160,20,20,0.35)');
+    drip.addColorStop(1,'rgba(160,20,20,0)');
+    ctx.fillStyle=drip;
+    ctx.fillRect(px,py+plat.h,plat.w,18);
+    // Main body: dark basalt
+    const pbody=ctx.createLinearGradient(0,py,0,py+plat.h);
+    pbody.addColorStop(0,'#2c1010');
+    pbody.addColorStop(1,'#1a0808');
+    ctx.fillStyle=pbody;
+    ctx.fillRect(px,py+2,plat.w,plat.h-2);
+    // Horizontal brick lines on platform body
+    ctx.strokeStyle='rgba(100,30,30,0.4)';
     ctx.lineWidth=1;
-    ctx.strokeRect(px,py,plat.w,plat.h);
+    for(let r=1;r*6<plat.h;r++) {
+      ctx.beginPath(); ctx.moveTo(px,py+2+r*6); ctx.lineTo(px+plat.w,py+2+r*6); ctx.stroke();
+    }
+    // Iconic ULTRAKILL white top edge
+    ctx.fillStyle='#ffffff';
+    ctx.fillRect(px,py,plat.w,3);
+    // Subtle inner shadow below white edge
+    const innerShadow=ctx.createLinearGradient(0,py+3,0,py+10);
+    innerShadow.addColorStop(0,'rgba(255,255,255,0.1)');
+    innerShadow.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=innerShadow;
+    ctx.fillRect(px,py+3,plat.w,7);
   }
 
   // ── Particles ──
