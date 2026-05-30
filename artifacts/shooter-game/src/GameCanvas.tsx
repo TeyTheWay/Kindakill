@@ -777,7 +777,7 @@ export default function GameCanvas() {
             if(!e.dead){
               gs.score+=e.pts; gs.kills++;
               spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,14,200,50,50,230);
-              p.hp=Math.min(p.maxHp,p.hp+28); // health on kill
+              p.hp=Math.min(p.maxHp,p.hp+30); // health on kill
             }
             e.dead=true;
           }
@@ -962,7 +962,7 @@ export default function GameCanvas() {
               e.hp-=b.dmg;
               spawnParticles(gs,b.x,b.y,4,200,50,50,150);
               b.hp=0; hitSomething=true;
-              if(e.hp<=0){ e.dead=true; gs.score+=e.pts; gs.kills++; p.hp=Math.min(p.maxHp,p.hp+28); spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,12,200,50,50,220); }
+              if(e.hp<=0){ e.dead=true; gs.score+=e.pts; gs.kills++; p.hp=Math.min(p.maxHp,p.hp+30); spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,12,200,50,50,220); }
               break;
             }
           }
