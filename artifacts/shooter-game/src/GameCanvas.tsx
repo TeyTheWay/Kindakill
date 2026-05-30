@@ -10,7 +10,7 @@ const MAX_FALL = 920;
 const PW = 32, PH = 44;
 const GROUND_Y = GH - 80;
 const PARRY_DUR = 0.28;
-const GRAPPLE_FORCE = 1300;
+const GRAPPLE_FORCE = 3000;
 const GRAPPLE_RANGE = 480;
 const INV_DUR = 0.5;
 const BOSS_SPAWN_KILLS = 20;
@@ -384,36 +384,32 @@ export default function GameCanvas() {
 
         // Grapple (right click)
         if(mouse.rightClick) {
-          // Try to latch
           p.grapple=true;
           const worldMouseX=mouse.x+gs.camX;
           const worldMouseY=mouse.y+gs.camY;
           const cx=p.x+p.w/2, cy=p.y+p.h/2;
           const dist=Math.hypot(worldMouseX-cx,worldMouseY-cy);
-          if(dist<=GRAPPLE_RANGE) {
-            // Check if near platform or within range
-            let latched=false;
-            for(const plat of gs.platforms) {
-              if(aabb(worldMouseX-10,worldMouseY-10,20,20,plat.x,plat.y,plat.w,plat.h)) {
-                p.grappleX=worldMouseX; p.grappleY=worldMouseY; p.grappleOn=true; latched=true; break;
-              }
-            }
-            if(!latched && dist<=GRAPPLE_RANGE) {
-              p.grappleX=worldMouseX; p.grappleY=worldMouseY; p.grappleOn=true;
-            }
+          if(dist<=GRAPPLE_RANGE && dist>10) {
+            p.grappleX=worldMouseX; p.grappleY=worldMouseY; p.grappleOn=true;
+            // Snap boost: immediate velocity kick toward grapple point
+            const snapNx=(worldMouseX-cx)/dist, snapNy=(worldMouseY-cy)/dist;
+            p.vx+=snapNx*520; p.vy+=snapNy*520;
           }
           mouse.rightClick=false;
         }
         if(!mouse.right) { p.grapple=false; p.grappleOn=false; }
 
-        // Apply grapple force
+        // Apply grapple force (strong continuous pull)
         if(p.grappleOn && p.grapple) {
           const cx=p.x+p.w/2, cy=p.y+p.h/2;
           const dx=p.grappleX-cx, dy=p.grappleY-cy;
           const dist=Math.hypot(dx,dy);
-          if(dist>30) {
-            const fx=dx/dist*GRAPPLE_FORCE, fy=dy/dist*GRAPPLE_FORCE;
-            p.vx+=fx*dt; p.vy+=fy*dt;
+          if(dist>18) {
+            p.vx+=dx/dist*GRAPPLE_FORCE*dt;
+            p.vy+=dy/dist*GRAPPLE_FORCE*dt;
+            // Allow much higher speed while grappling
+            const spd=Math.hypot(p.vx,p.vy);
+            if(spd>1600){ p.vx=p.vx/spd*1600; p.vy=p.vy/spd*1600; }
           } else {
             p.grappleOn=false;
           }
@@ -825,33 +821,452 @@ export default function GameCanvas() {
   );
 }
 
+// ─── SPRITE HELPERS ──────────────────────────────────────────────────────────
+
+// V1-style player (white mechanical android, red visor)
+function drawV1(ctx:CanvasRenderingContext2D, p:Player, camX:number, camY:number, now:number) {
+  if(p.dead) return;
+  const sx=p.x+p.w/2-camX, sy=p.y+p.h-camY;
+  const moving=Math.abs(p.vx)>20;
+  const leg=moving?Math.sin(now*0.013)*9:0;
+  const arm=moving?Math.sin(now*0.013+Math.PI)*6:0;
+  const isParry=p.parryActive;
+  const isInv=p.inv>0;
+  if(isInv && Math.floor(now/75)%2===0) return;
+
+  ctx.save();
+  ctx.translate(sx,sy);
+  if(!p.facingRight) ctx.scale(-1,1);
+
+  ctx.shadowColor=isParry?'#4499ff':'#ffffff';
+  ctx.shadowBlur=isParry?22:10;
+
+  // ─ Legs ─
+  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
+  ctx.fillRect(-11,-14-leg,8,15+leg);
+  ctx.fillStyle=isParry?'#ccddff':'#eeeeee';
+  ctx.fillRect(-12,-2-leg,11,5);  // left boot
+  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
+  ctx.fillRect(3,-14+leg,8,15-leg);
+  ctx.fillStyle=isParry?'#ccddff':'#eeeeee';
+  ctx.fillRect(2,-2+leg,11,5);    // right boot
+
+  // ─ Left arm (swings back) ─
+  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
+  ctx.fillRect(-17,-43+arm,7,17);
+
+  // ─ Right arm + gun ─
+  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
+  ctx.fillRect(10,-43-arm,7,17);
+  ctx.fillStyle='#777';
+  ctx.fillRect(15,-30-arm,18,5); // barrel
+  ctx.fillStyle='#555';
+  ctx.fillRect(15,-33-arm,7,4);  // sight
+  ctx.fillStyle='#666';
+  ctx.fillRect(31,-32-arm,4,8);  // muzzle
+
+  // ─ Torso ─
+  ctx.fillStyle=isParry?'#ccddf5':'#eeeeee';
+  ctx.fillRect(-12,-45,24,32);
+  // Shoulder pads
+  ctx.fillStyle=isParry?'#ddeeff':'#ffffff';
+  ctx.fillRect(-18,-46,8,9);
+  ctx.fillRect(10,-46,8,9);
+  // Chest plate lines
+  ctx.fillStyle='rgba(0,0,0,0.14)';
+  ctx.fillRect(-10,-39,20,2);
+  ctx.fillRect(-10,-30,20,2);
+  ctx.fillRect(-10,-21,20,2);
+
+  // ─ Head (angular block) ─
+  ctx.fillStyle=isParry?'#ddeeff':'#ffffff';
+  ctx.fillRect(-10,-64,20,20);
+  ctx.fillStyle=isParry?'#bbccee':'#e0e0e0';
+  ctx.fillRect(-14,-62,5,14);   // left ear
+  ctx.fillRect(9,-62,5,14);    // right ear
+
+  // ─ Red visor (V1 signature) ─
+  ctx.fillStyle=isParry?'#3388ff':'#ff1111';
+  ctx.shadowColor=isParry?'#3388ff':'#ff0000';
+  ctx.shadowBlur=14;
+  ctx.fillRect(-7,-56,18,6);   // main visor
+  ctx.fillStyle=isParry?'#88aaff':'#ff6655';
+  ctx.fillRect(-5,-56,5,6);   // bright segment
+
+  ctx.shadowBlur=0;
+  ctx.restore();
+
+  // Grapple rope
+  if(p.grappleOn||p.grapple) {
+    const gx=p.grappleX-camX, gy=p.grappleY-camY;
+    ctx.save();
+    ctx.strokeStyle='rgba(120,220,255,0.9)';
+    ctx.lineWidth=2.5;
+    ctx.setLineDash([6,3]);
+    ctx.lineDashOffset=-(now*0.09%9);
+    ctx.beginPath(); ctx.moveTo(sx,sy-30); ctx.lineTo(gx,gy); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineDashOffset=0;
+    ctx.fillStyle='#88eeff';
+    ctx.shadowColor='#88eeff'; ctx.shadowBlur=8;
+    ctx.beginPath(); ctx.arc(gx,gy,5,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.restore();
+  }
+}
+
+// Filth (red blob with big eyes and jagged grin)
+function drawFilth(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:number, now:number) {
+  const sx=e.x+e.w/2-camX, sy=e.y+e.h-camY;
+  const moving=Math.abs(e.vx)>15;
+  const bounce=moving?Math.abs(Math.sin(now*0.014+e.id))*4:0;
+  const wob=Math.sin(now*0.007+e.id*1.9)*1.5;
+  const isS=e.stunned>0;
+  const col=isS?'#5599ff':'#cc1111';
+  const dk=isS?'#3366cc':'#880000';
+
+  ctx.save();
+  ctx.translate(sx,sy-bounce);
+  if(e.vx<-5) ctx.scale(-1,1);
+
+  ctx.shadowColor=isS?'#88aaff':'#dd2222'; ctx.shadowBlur=7;
+
+  // Stumpy legs
+  ctx.fillStyle=dk;
+  ctx.fillRect(-9,-10+bounce*0.3,7,12);
+  ctx.fillRect(2,-10-bounce*0.3,7,12);
+
+  // Arms
+  ctx.fillStyle=col;
+  ctx.fillRect(-20,-28-bounce*0.2,8,12);
+  ctx.fillRect(12,-28+bounce*0.2,8,12);
+
+  // Blob body
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.ellipse(wob,-22,15,17,0,0,Math.PI*2); ctx.fill();
+  // Dark underside
+  ctx.fillStyle=dk;
+  ctx.beginPath(); ctx.ellipse(wob,-14,14,8,0,0,Math.PI); ctx.fill();
+
+  // Big dark eyes
+  ctx.shadowBlur=0;
+  ctx.fillStyle='#0d0d0d';
+  ctx.beginPath(); ctx.arc(-5+wob,-26,5.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(6+wob,-26,5.5,0,Math.PI*2); ctx.fill();
+  // Red irises
+  ctx.fillStyle=isS?'#88ccff':'#bb2222';
+  ctx.beginPath(); ctx.arc(-4+wob,-27,2.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(7+wob,-27,2.5,0,Math.PI*2); ctx.fill();
+  // Pupils
+  ctx.fillStyle='#000';
+  ctx.beginPath(); ctx.arc(-3+wob,-27,1,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(8+wob,-27,1,0,Math.PI*2); ctx.fill();
+
+  // Jagged grin
+  ctx.fillStyle='#0d0d0d';
+  ctx.fillRect(-8+wob,-18,16,6);
+  ctx.fillStyle='#ddcc77';
+  for(let i=0;i<4;i++) { ctx.fillRect(-7+wob+i*4,-18,3,4); }
+  ctx.fillStyle='#ccbb66';
+  for(let i=0;i<3;i++) { ctx.fillRect(-5+wob+i*4,-13,3,-3); }
+
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// Stray (hooded archer with glowing eyes and shotgun arm)
+function drawStray(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:number, now:number) {
+  const sx=e.x+e.w/2-camX, sy=e.y+e.h-camY;
+  const moving=Math.abs(e.vx)>10;
+  const ws=Math.sin(now*0.009+e.id*2.1);
+  const isS=e.stunned>0;
+  const rc=isS?'#4466bb':'#773300';
+  const dk=isS?'#2244aa':'#551100';
+  const hc=isS?'#334499':'#440e00';
+
+  ctx.save();
+  ctx.translate(sx,sy);
+  if(e.vx<-5) ctx.scale(-1,1);
+
+  ctx.shadowColor=isS?'#88aaff':'#dd7700'; ctx.shadowBlur=7;
+
+  // Shuffling feet
+  ctx.fillStyle=dk;
+  ctx.fillRect(-7,-8+(moving?ws*3:0),6,10);
+  ctx.fillRect(1,-8-(moving?ws*3:0),6,10);
+
+  // Robe body (trapezoidal)
+  ctx.fillStyle=rc;
+  ctx.beginPath();
+  ctx.moveTo(-14,-40); ctx.lineTo(14,-40);
+  ctx.lineTo(18,-8); ctx.lineTo(-18,-8);
+  ctx.closePath(); ctx.fill();
+  // Robe center fold
+  ctx.fillStyle=dk;
+  ctx.fillRect(-2,-38,4,30);
+  ctx.fillStyle=rc;
+  ctx.fillRect(-1,-38,2,30);
+
+  // Left arm tucked
+  ctx.fillStyle=dk;
+  ctx.fillRect(-18,-38,7,14);
+
+  // Right arm + SHOTGUN
+  ctx.fillStyle=rc;
+  ctx.fillRect(12,-38,8,14);
+  ctx.fillStyle=dk;
+  ctx.fillRect(19,-32,7,10);
+  ctx.fillStyle='#444';
+  ctx.fillRect(24,-31,24,6);   // barrel
+  ctx.fillStyle='#666';
+  ctx.fillRect(24,-29,24,3);   // shine
+  ctx.fillStyle='#333';
+  ctx.fillRect(46,-33,5,10);   // muzzle
+  ctx.fillStyle='#555';
+  ctx.fillRect(28,-25,8,4);    // guard
+
+  // Pointed hood
+  ctx.fillStyle=hc;
+  ctx.beginPath();
+  ctx.moveTo(-13,-40); ctx.lineTo(0,-67); ctx.lineTo(13,-40);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#0a0a0a';
+  ctx.fillRect(-11,-52,22,14); // shadow interior
+  ctx.fillStyle=rc;
+  ctx.fillRect(-13,-40,26,3);  // rim
+
+  // Glowing eyes under hood
+  ctx.fillStyle=isS?'#88ccff':'#ff9900';
+  ctx.shadowColor=isS?'#88ccff':'#ff9900'; ctx.shadowBlur=12;
+  ctx.beginPath(); ctx.arc(-4,-48,3.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5,-48,3.5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=isS?'#cceeff':'#ffcc44';
+  ctx.beginPath(); ctx.arc(-4,-48,1.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5,-48,1.5,0,Math.PI*2); ctx.fill();
+
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// Schism (split warrior with glowing seam and huge arm)
+function drawSchism(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:number, now:number) {
+  const sx=e.x+e.w/2-camX, sy=e.y+e.h-camY;
+  const ws=Math.sin(now*0.008+e.id*3.3);
+  const isS=e.stunned>0;
+  const bc=isS?'#4488cc':'#5522aa';
+  const dk=isS?'#2255aa':'#331177';
+  const sc=isS?'#88ccff':'#cc66ff';
+  const uo=Math.sin(now*0.005+e.id)*2; // upper half offset
+
+  ctx.save();
+  ctx.translate(sx,sy);
+  if(e.vx<-5) ctx.scale(-1,1);
+
+  ctx.shadowColor=isS?'#88aaff':'#8833dd'; ctx.shadowBlur=9;
+
+  // Legs (bony)
+  ctx.fillStyle=dk;
+  ctx.fillRect(-10,-18+ws*5,8,20);
+  ctx.fillRect(2,-18-ws*5,8,20);
+  ctx.fillStyle=sc;
+  ctx.shadowColor=sc; ctx.shadowBlur=4;
+  ctx.fillRect(-10,-9+ws*2,8,2);  // knee joint glow
+  ctx.fillRect(2,-9-ws*2,8,2);
+  ctx.shadowBlur=9;
+
+  // Lower torso half
+  ctx.fillStyle=bc;
+  ctx.fillRect(-13,-36,26,18);
+  ctx.fillStyle=dk;
+  ctx.fillRect(-11,-34,22,14);
+
+  // Upper torso half (slightly floating/offset)
+  ctx.fillStyle=bc;
+  ctx.fillRect(-13,-55+uo,26,21);
+  ctx.fillStyle=dk;
+  ctx.fillRect(-11,-53+uo,22,17);
+
+  // Glowing seam (Schism signature)
+  ctx.fillStyle=sc;
+  ctx.shadowColor=sc; ctx.shadowBlur=12;
+  ctx.fillRect(-2,-55+uo,4,37);
+  ctx.shadowBlur=9;
+
+  // Small left arm
+  ctx.fillStyle=dk;
+  ctx.shadowBlur=0;
+  ctx.fillRect(-20,-52+ws*2+uo,8,22);
+  ctx.fillStyle=bc;
+  ctx.fillRect(-20,-52+ws*2+uo,8,4);
+
+  // HUGE right arm (Schism signature)
+  ctx.fillStyle=bc;
+  ctx.fillRect(12,-54+uo,12,28);
+  ctx.fillStyle=sc;
+  ctx.shadowColor=sc; ctx.shadowBlur=6;
+  ctx.fillRect(23,-56+uo,22,30); // massive fist
+  ctx.fillStyle=bc;
+  ctx.fillRect(23,-56+uo,22,5);  // top
+
+  // Skull head
+  ctx.shadowBlur=0;
+  ctx.fillStyle=bc;
+  ctx.fillRect(-11,-69+uo,22,16);
+  ctx.fillStyle=dk;
+  ctx.fillRect(-8,-69+uo,16,4);
+  ctx.fillStyle='#0a0a0a';
+  ctx.fillRect(-8,-64+uo,6,7);
+  ctx.fillRect(2,-64+uo,6,7);
+  ctx.fillStyle=sc;
+  ctx.shadowColor=sc; ctx.shadowBlur=8;
+  ctx.fillRect(-7,-63+uo,4,5);
+  ctx.fillRect(3,-63+uo,4,5);
+
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// Mirror Knight boss (black inverse V1 with red glow)
+function drawMirrorV1(ctx:CanvasRenderingContext2D, boss:Boss, camX:number, camY:number, now:number) {
+  if(boss.dead) return;
+  const sx=boss.x+boss.w/2-camX, sy=boss.y+boss.h-camY;
+  const moving=Math.abs(boss.vx)>20;
+  const leg=moving?Math.sin(now*0.011*(boss.facingRight?1:-1)*6)*11:0;
+  const arm=moving?Math.sin(now*0.011*(boss.facingRight?1:-1)*6+Math.PI)*7:0;
+  const gcs=['#ff2200','#ff4400','#ff7700'];
+  const gc=gcs[boss.phase-1];
+  const pulse=boss.phase===3?16+Math.sin(now*0.007)*7:boss.phase===2?12:9;
+  const S=1.3;
+
+  ctx.save();
+  ctx.translate(sx,sy);
+  if(!boss.facingRight) ctx.scale(-1,1);
+  ctx.scale(S,S);
+
+  ctx.shadowColor=gc; ctx.shadowBlur=pulse;
+
+  // Legs (black with red joints)
+  ctx.fillStyle='#070707';
+  ctx.fillRect(-11,-14-leg,8,15+leg);
+  ctx.fillRect(3,-14+leg,8,15-leg);
+  ctx.fillStyle=gc; ctx.shadowBlur=5;
+  ctx.fillRect(-11,-4-leg*0.4,10,2);   // knee highlight
+  ctx.fillRect(3,-4+leg*0.4,10,2);
+  ctx.shadowBlur=pulse;
+  ctx.fillStyle='#0d0d0d';
+  ctx.fillRect(-12,-2-leg,11,5);   // boot
+  ctx.fillRect(2,-2+leg,11,5);
+
+  // Left arm
+  ctx.fillStyle='#070707';
+  ctx.fillRect(-17,-43+arm,7,17);
+  ctx.fillStyle=gc; ctx.shadowBlur=4;
+  ctx.fillRect(-17,-33+arm,7,2); // elbow
+  ctx.shadowBlur=pulse;
+
+  // Right arm + glowing gun
+  ctx.fillStyle='#070707';
+  ctx.fillRect(10,-43-arm,7,17);
+  ctx.fillStyle=gc; ctx.shadowBlur=10;
+  ctx.fillRect(15,-31-arm,20,6);  // glowing barrel
+  ctx.fillStyle='#330000';
+  ctx.fillRect(15,-34-arm,8,4);
+  ctx.fillStyle=gc; ctx.shadowBlur=8;
+  ctx.fillRect(33,-33-arm,4,9); // muzzle
+
+  // Torso (black)
+  ctx.shadowBlur=pulse;
+  ctx.fillStyle='#050505';
+  ctx.fillRect(-12,-45,24,32);
+  ctx.fillStyle=gc; ctx.shadowBlur=4;
+  ctx.fillRect(-10,-39,20,2);   // chest lines (red)
+  ctx.fillRect(-10,-30,20,2);
+  ctx.fillRect(-10,-21,20,2);
+  ctx.shadowBlur=pulse;
+
+  // Shoulder pads
+  ctx.fillStyle='#0a0a0a';
+  ctx.fillRect(-18,-46,8,10);
+  ctx.fillRect(10,-46,8,10);
+  ctx.fillStyle=gc; ctx.shadowBlur=4;
+  ctx.fillRect(-18,-46,8,2);
+  ctx.fillRect(10,-46,8,2);
+  ctx.shadowBlur=pulse;
+
+  // Head (black angular)
+  ctx.fillStyle='#050505';
+  ctx.fillRect(-10,-65,20,21);
+  ctx.fillStyle='#0a0a0a';
+  ctx.fillRect(-14,-63,5,14);
+  ctx.fillRect(9,-63,5,14);
+  ctx.fillStyle=gc; ctx.shadowBlur=4;
+  ctx.fillRect(-10,-65,20,2);   // head outline (red)
+  ctx.fillRect(-10,-65,2,21);
+  ctx.fillRect(8,-65,2,21);
+  ctx.shadowBlur=pulse;
+
+  // RED VISOR (inverted from white V1)
+  ctx.fillStyle=gc;
+  ctx.shadowColor=gc; ctx.shadowBlur=18;
+  ctx.fillRect(-7,-57,18,7);
+  ctx.fillStyle='#ffbbaa';
+  ctx.shadowBlur=8;
+  ctx.fillRect(-4,-56,9,5);   // bright center
+
+  // Parry shield
+  if(boss.parryActive) {
+    ctx.shadowBlur=0;
+    ctx.fillStyle='rgba(255,40,0,0.2)';
+    ctx.fillRect(-26,-74,52,80);
+    ctx.strokeStyle=gc; ctx.lineWidth=2;
+    ctx.strokeRect(-26,-74,52,80);
+  }
+
+  ctx.shadowBlur=0; ctx.restore();
+
+  // Phase dots
+  for(let i=0;i<boss.phase;i++) {
+    ctx.fillStyle=gcs[i]; ctx.shadowColor=gcs[i]; ctx.shadowBlur=7;
+    ctx.fillRect(sx-15+i*15,sy-boss.h*S-20,11,5);
+  }
+  ctx.shadowBlur=0;
+
+  // Grapple rope
+  if(boss.grappleOn||boss.grapple) {
+    const gx=boss.grappleX-camX, gy=boss.grappleY-camY;
+    ctx.strokeStyle=`${gc}cc`; ctx.lineWidth=3;
+    ctx.setLineDash([5,3]); ctx.lineDashOffset=-(now*0.07%8);
+    ctx.beginPath(); ctx.moveTo(sx,sy-boss.h*S*0.5); ctx.lineTo(gx,gy); ctx.stroke();
+    ctx.setLineDash([]); ctx.lineDashOffset=0;
+    ctx.fillStyle=gc; ctx.shadowColor=gc; ctx.shadowBlur=10;
+    ctx.beginPath(); ctx.arc(gx,gy,6,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur=0;
+  }
+}
+
 // ─── RENDERER ────────────────────────────────────────────────────────────────
 function render(ctx:CanvasRenderingContext2D, gs:GS) {
-  const cx=gs.camX, cy=gs.camY;
+  const now=Date.now();
+  const camX=gs.camX, camY=gs.camY;
   const W=ctx.canvas.width, H=ctx.canvas.height;
 
   // ── Background ──
-  ctx.fillStyle='#0a0a1a';
+  ctx.fillStyle='#06060f';
   ctx.fillRect(0,0,W,H);
 
-  // Parallax stars
-  ctx.fillStyle='rgba(255,255,255,0.25)';
-  const starSeed=17;
-  for(let i=0;i<80;i++) {
-    const sx=((i*starSeed*137+i*53)%2400)+((cx*0.15)%2400);
-    const sy=((i*starSeed*71+i*91)%H);
-    ctx.fillRect(sx%W,sy,Math.random()<0.05?2:1,Math.random()<0.05?2:1);
+  // Scrolling stars (parallax)
+  for(let i=0;i<90;i++) {
+    const sx2=((i*2381+i*53)*1.0 - camX*0.12)%W;
+    const sy2=(i*1171+i*77)%H;
+    const bright=i%5===0?0.5:0.2;
+    ctx.fillStyle=`rgba(255,255,255,${bright})`;
+    ctx.fillRect((sx2+W)%W,sy2,i%7===0?2:1,i%7===0?2:1);
   }
-
-  // Background gradient glow
-  const grad=ctx.createLinearGradient(0,0,0,H);
-  grad.addColorStop(0,'rgba(10,5,40,0)');
-  grad.addColorStop(1,'rgba(20,10,60,0.4)');
-  ctx.fillStyle=grad;
+  // Background gradient
+  const bgGrad=ctx.createLinearGradient(0,0,0,H);
+  bgGrad.addColorStop(0,'rgba(8,4,28,0)');
+  bgGrad.addColorStop(1,'rgba(16,6,48,0.5)');
+  ctx.fillStyle=bgGrad;
   ctx.fillRect(0,0,W,H);
 
-  function wx(x:number){ return x-cx; }
-  function wy(y:number){ return y-cy; }
+  function wx(x:number){ return x-camX; }
+  function wy(y:number){ return y-camY; }
 
   // ── Platforms ──
   for(const plat of gs.platforms) {
@@ -883,198 +1298,63 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
   }
   ctx.globalAlpha=1;
 
-  // ── Enemies ──
+  // ── Enemies (ULTRAKILL-styled sprites) ──
   for(const e of gs.enemies) {
     if(e.dead) continue;
-    const ex=wx(e.x), ey=wy(e.y);
-    const cfg=ECFG[e.type];
-    const isStunned=e.stunned>0;
-
-    // Glow
-    ctx.shadowColor=isStunned?'#88ccff':cfg.col;
-    ctx.shadowBlur=isStunned?12:8;
-    // Body
-    ctx.fillStyle=isStunned?'#5599ff':cfg.col;
-    ctx.fillRect(ex,ey,e.w,e.h);
-    // Inner highlight
-    ctx.fillStyle='rgba(255,255,255,0.15)';
-    ctx.fillRect(ex+2,ey+2,e.w-4,6);
-    // Eyes
-    const eyeDir=e.dir>0?1:-1;
-    ctx.fillStyle='#fff';
-    ctx.fillRect(ex+e.w/2+eyeDir*4-3,ey+8,6,6);
-    ctx.fillStyle='#000';
-    ctx.fillRect(ex+e.w/2+eyeDir*5-2,ey+9,4,4);
-    // Weapon indicator for shotgunner/knight
-    if(e.type==='shotgunner') {
-      ctx.fillStyle='#ffaa00';
-      ctx.fillRect(ex+(e.dir>0?e.w:- 8),ey+e.h/2-2,8,4);
-    }
-    if(e.type==='knight') {
-      ctx.fillStyle='#cc88ff';
-      ctx.fillRect(ex+(e.dir>0?e.w:-12),ey+e.h*0.3,12,5);
-    }
-    ctx.shadowBlur=0;
-
-    // HP bar above enemy
+    if(e.type==='grunt')      drawFilth(ctx,e,camX,camY,now);
+    else if(e.type==='shotgunner') drawStray(ctx,e,camX,camY,now);
+    else if(e.type==='knight')     drawSchism(ctx,e,camX,camY,now);
+    // HP bar above entity
     if(e.hp<e.maxHp) {
-      ctx.fillStyle='#300';
-      ctx.fillRect(ex,ey-10,e.w,6);
-      ctx.fillStyle='#f00';
-      ctx.fillRect(ex,ey-10,e.w*(e.hp/e.maxHp),6);
+      const hx=wx(e.x), hy=wy(e.y)-10;
+      ctx.fillStyle='#300'; ctx.fillRect(hx,hy,e.w,5);
+      ctx.fillStyle='#f00'; ctx.fillRect(hx,hy,e.w*(e.hp/e.maxHp),5);
     }
   }
 
-  // ── Boss ──
-  const boss=gs.boss;
-  if(boss && !boss.dead) {
-    const bx=wx(boss.x), by=wy(boss.y);
-    const phaseCols=['#000000','#1a0000','#2d0000'];
-    const glowCols=['#ff0000','#ff3300','#ff6600'];
-    const pIdx=boss.phase-1;
-
-    // Outer glow (pulsing based on phase)
-    const glowSize=boss.phase===3?20+Math.sin(Date.now()*0.008)*8:boss.phase===2?14:10;
-    ctx.shadowColor=glowCols[pIdx];
-    ctx.shadowBlur=glowSize;
-
-    // Body - BLACK (opposite of white player)
-    ctx.fillStyle=phaseCols[pIdx];
-    ctx.fillRect(bx,by,boss.w,boss.h);
-
-    // Red border/outline
-    ctx.strokeStyle=glowCols[pIdx];
-    ctx.lineWidth=boss.phase===3?3:2;
-    ctx.strokeRect(bx,by,boss.w,boss.h);
-
-    // Parry flash on boss
-    if(boss.parryActive) {
-      ctx.fillStyle='rgba(255,50,50,0.35)';
-      ctx.fillRect(bx-4,by-4,boss.w+8,boss.h+8);
-    }
-
-    // Eyes (glowing red, opposite of white player's dark eyes)
-    const eyeDir=boss.facingRight?1:-1;
-    ctx.shadowColor='#ff0000';
-    ctx.shadowBlur=12;
-    ctx.fillStyle='#ff2222';
-    ctx.fillRect(bx+boss.w/2+eyeDir*5-3,by+10,7,7);
-    ctx.fillStyle='#ff6666';
-    ctx.fillRect(bx+boss.w/2+eyeDir*6-2,by+11,4,4);
-
-    // Phase markers
-    for(let i=0;i<boss.phase;i++) {
-      ctx.fillStyle=glowCols[i];
-      ctx.fillRect(bx+5+i*10,by+boss.h-6,7,4);
-    }
-
+  // ── Boss (Mirror V1) ──
+  if(gs.boss && !gs.boss.dead) {
+    drawMirrorV1(ctx,gs.boss,camX,camY,now);
+    // Wide HP bar under boss sprite
+    const boss=gs.boss;
+    const bw2=boss.w*1.35, boff=(bw2-boss.w)/2;
+    const bhx=wx(boss.x)-boff, bhy=wy(boss.y)-14;
+    ctx.fillStyle='#400'; ctx.fillRect(bhx,bhy,bw2,7);
+    const gc2=boss.phase===3?'#ff7700':boss.phase===2?'#ff4400':'#ff2200';
+    ctx.fillStyle=gc2; ctx.shadowColor=gc2; ctx.shadowBlur=5;
+    ctx.fillRect(bhx,bhy,bw2*(boss.hp/boss.maxHp),7);
     ctx.shadowBlur=0;
-
-    // Grapple rope
-    if(boss.grappleOn || boss.grapple) {
-      ctx.strokeStyle='rgba(180,0,0,0.7)';
-      ctx.lineWidth=2;
-      ctx.setLineDash([4,4]);
-      ctx.beginPath();
-      ctx.moveTo(bx+boss.w/2, by+boss.h/2);
-      ctx.lineTo(wx(boss.grappleX), wy(boss.grappleY));
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // Hook point
-      ctx.fillStyle='#ff3333';
-      ctx.fillRect(wx(boss.grappleX)-4,wy(boss.grappleY)-4,8,8);
-    }
   }
 
-  // ── Player ──
-  const p=gs.player;
-  if(!p.dead) {
-    const px=wx(p.x), py=wy(p.y);
-    const isInv=p.inv>0;
-    const isParry=p.parryActive;
-
-    if(!isInv || Math.floor(Date.now()/80)%2===0) {
-      // Player glow (WHITE player)
-      ctx.shadowColor='#ffffff';
-      ctx.shadowBlur=isParry?20:10;
-
-      // Parry flash effect
-      if(isParry) {
-        ctx.fillStyle='rgba(100,180,255,0.3)';
-        ctx.fillRect(px-6,py-6,p.w+12,p.h+12);
-      }
-
-      // Body - WHITE
-      ctx.fillStyle=isParry?'#aaddff':'#f0f0f0';
-      ctx.fillRect(px,py,p.w,p.h);
-      // Inner highlight
-      ctx.fillStyle='rgba(255,255,255,0.6)';
-      ctx.fillRect(px+2,py+2,p.w-4,6);
-      // Body detail
-      ctx.fillStyle='rgba(0,0,0,0.1)';
-      ctx.fillRect(px+4,py+p.h*0.55,p.w-8,p.h*0.3);
-
-      // Eyes - dark on white body
-      const eyeDir=p.facingRight?1:-1;
-      ctx.shadowBlur=0;
-      ctx.fillStyle='#222';
-      ctx.fillRect(px+p.w/2+eyeDir*4-3,py+10,6,6);
-      ctx.fillStyle='#444';
-      ctx.fillRect(px+p.w/2+eyeDir*5-2,py+11,3,3);
-
-      ctx.shadowBlur=0;
-    }
-
-    // Grapple rope
-    if(p.grappleOn || p.grapple) {
-      ctx.strokeStyle='rgba(100,200,255,0.8)';
-      ctx.lineWidth=2;
-      ctx.setLineDash([5,3]);
-      ctx.beginPath();
-      ctx.moveTo(px+p.w/2, py+p.h/2);
-      ctx.lineTo(wx(p.grappleX), wy(p.grappleY));
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle='#88ddff';
-      ctx.beginPath();
-      ctx.arc(wx(p.grappleX),wy(p.grappleY),5,0,Math.PI*2);
-      ctx.fill();
-    }
-  }
+  // ── Player (V1 android) ──
+  drawV1(ctx,gs.player,camX,camY,now);
 
   // ── Bullets ──
   for(const b of gs.bullets) {
-    const bx=wx(b.x), by2=wy(b.y);
+    const bsx=wx(b.x+b.w/2), bsy=wy(b.y+b.h/2);
     if(b.btype==='grenade') {
-      ctx.fillStyle='#66ff00';
-      ctx.shadowColor='#66ff00';
-      ctx.shadowBlur=8;
-      ctx.beginPath();
-      ctx.arc(bx+b.w/2,by2+b.h/2,6,0,Math.PI*2);
-      ctx.fill();
-      // Fuse indicator
+      ctx.fillStyle='#55ff00'; ctx.shadowColor='#88ff00'; ctx.shadowBlur=10;
+      ctx.beginPath(); ctx.arc(bsx,bsy,6,0,Math.PI*2); ctx.fill();
       if(b.fuse>0) {
-        ctx.strokeStyle='#fff';
-        ctx.lineWidth=1.5;
+        ctx.strokeStyle='rgba(255,255,255,0.8)'; ctx.lineWidth=1.5; ctx.shadowBlur=0;
         ctx.beginPath();
-        ctx.arc(bx+b.w/2,by2+b.h/2,8,0,Math.PI*2*(1-b.fuse/WEAPONS[2].fuse));
+        ctx.arc(bsx,bsy,9,-Math.PI/2,-Math.PI/2+Math.PI*2*(1-b.fuse/WEAPONS[2].fuse));
         ctx.stroke();
       }
     } else if(b.fromPlayer) {
-      ctx.fillStyle='#ffee44';
-      ctx.shadowColor='#ffee44';
-      ctx.shadowBlur=6;
-      ctx.fillRect(bx,by2,b.btype==='shotgun'?5:7,b.btype==='shotgun'?5:7);
+      const col=b.btype==='shotgun'?'#ffaa22':'#ffee22';
+      ctx.fillStyle=col; ctx.shadowColor=col; ctx.shadowBlur=7;
+      const bsz=b.btype==='shotgun'?5:8;
+      ctx.fillRect(bsx-bsz/2,bsy-bsz/2,bsz,bsz);
     } else {
-      ctx.fillStyle=b.btype==='deflected'?'#44eeff':'#ff4488';
-      ctx.shadowColor=ctx.fillStyle;
-      ctx.shadowBlur=6;
-      ctx.fillRect(bx-1,by2-1,10,10);
+      const col=b.btype==='deflected'?'#44eeff':'#ff3377';
+      ctx.fillStyle=col; ctx.shadowColor=col; ctx.shadowBlur=9;
+      ctx.beginPath(); ctx.arc(bsx,bsy,5,0,Math.PI*2); ctx.fill();
     }
     ctx.shadowBlur=0;
   }
 
-  // ── Ground indicator ──
-  ctx.fillStyle='rgba(80,120,255,0.15)';
+  // ── Subtle ground line ──
+  ctx.fillStyle='rgba(80,120,255,0.12)';
   ctx.fillRect(0,wy(GROUND_Y+80)-2,W,2);
 }
