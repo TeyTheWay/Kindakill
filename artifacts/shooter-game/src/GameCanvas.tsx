@@ -21,6 +21,8 @@ const WEAPONS = [
   { name: 'SHOTGUN',  cd: 0.70, dmg: 16, spd: 580, pellets: 6, spread: 0.28, fuse: 0 },
   { name: 'GRENADE',  cd: 0.85, dmg: 55, spd: 380, pellets: 1, spread: 0,    fuse: 2.8 },
 ];
+const GRENADE_RADIUS = 384; // 6 tiles × 64px
+const GRENADE_MAX_RANGE = 1200;
 
 // col = base colour (unused in sprite draw, but used for HP bars / debug)
 // melee = attacks by touching; flying = no gravity; hes = hesitation window (s)
@@ -29,7 +31,7 @@ const ECFG: Record<string,{w:number;h:number;hp:number;spd:number;pts:number;col
   knight:    {w:34,h:46,hp:70, spd:168,pts:100, col:'#ff6600',det:260,atr:74, adm:22,acd:1.5, melee:true,  flying:false,hes:0.45},
   shotgunner:{w:28,h:38,hp:55, spd:72,  pts:100, col:'#2266ff',det:390,atr:390,adm:11,acd:2.4, melee:false, flying:false,hes:0.55},
   grenadier: {w:30,h:44,hp:75, spd:58,  pts:130, col:'#ffcc00',det:440,atr:440,adm:22,acd:4.2, melee:false, flying:false,hes:0.90},
-  flyer:     {w:40,h:28,hp:45, spd:142,pts:130, col:'#aa33ff',det:380,atr:66, adm:18,acd:1.8, melee:false, flying:true, hes:0.28},
+  flyer:     {w:40,h:36,hp:55, spd:110,pts:150, col:'#ffe080',det:420,atr:420,adm:18,acd:2.2, melee:false, flying:true, hes:0.45},
 };
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -41,7 +43,7 @@ interface Player extends Entity {
   jumps:number; grounded:boolean;
   parryActive:boolean; parryTimer:number; parryFlash:number;
   weapon:number; shootCd:number;
-  grapple:boolean; grappleX:number; grappleY:number; grappleOn:boolean;
+  grapple:boolean; grappleX:number; grappleY:number; grappleOn:boolean; grappleLen:number;
   inv:number; dead:boolean; facingRight:boolean;
 }
 
@@ -127,13 +129,14 @@ function spawnParticles(gs:GS,x:number,y:number,count:number,r:number,g:number,b
 }
 
 function explodeGrenade(gs:GS,x:number,y:number,fromPlayer:boolean) {
-  spawnParticles(gs,x,y,18,255,160,30,350);
-  const radius=200;
+  spawnParticles(gs,x,y,32,255,160,30,450);
+  spawnParticles(gs,x,y,16,255,220,80,280);
+  const radius=GRENADE_RADIUS;
   const checkHit=(e:Entity & {hp:number;maxHp:number})=>{
     const cx=e.x+e.w/2, cy=e.y+e.h/2;
     const dist=Math.hypot(cx-x,cy-y);
     if(dist<radius) {
-      const dmg=Math.round(60*(1-dist/radius)+10);
+      const dmg=Math.round(70*(1-dist/radius)+15);
       e.hp-=dmg;
     }
   };
@@ -260,15 +263,24 @@ function spawnEnemyBullet(gs:GS,x:number,y:number,dx:number,dy:number,dmg:number
 function spawnEnemyGrenade(gs:GS,x:number,y:number,tx:number,ty:number) {
   const dx=tx-x, dy=ty-y;
   const dist=Math.hypot(dx,dy)||1;
-  // Lob upward by reducing the angle toward horizontal
   const flatAngle=Math.atan2(dy,dx);
-  const lobAngle=flatAngle-Math.min(0.6,80/dist); // more arc at short range
+  const lobAngle=flatAngle-Math.min(0.6,80/dist);
   const spd=Math.min(230+dist*0.28, 360);
   gs.bullets.push({
     id:gs.nextBulletId++,
     x,y,vx:Math.cos(lobAngle)*spd,vy:Math.sin(lobAngle)*spd,
     w:8,h:8,hp:1,maxHp:1,fromPlayer:false,dmg:22,
     btype:'grenade',fuse:3.0,bounced:0,
+  });
+}
+
+function spawnSeraphimLaser(gs:GS,x:number,y:number,tx:number,ty:number) {
+  const angle=Math.atan2(ty-y,tx-x)+(Math.random()-0.5)*0.06;
+  gs.bullets.push({
+    id:gs.nextBulletId++,
+    x,y,vx:Math.cos(angle)*920,vy:Math.sin(angle)*920,
+    w:6,h:6,hp:1,maxHp:1,fromPlayer:false,dmg:20,
+    btype:'laser',fuse:0,bounced:0,
   });
 }
 
@@ -297,7 +309,7 @@ function initGame(): GS {
     jumps:2,grounded:false,
     parryActive:false,parryTimer:0,parryFlash:0,
     weapon:0,shootCd:0,
-    grapple:false,grappleX:0,grappleY:0,grappleOn:false,
+    grapple:false,grappleX:0,grappleY:0,grappleOn:false,grappleLen:0,
     inv:0,dead:false,facingRight:true,
   };
   return {
@@ -425,12 +437,10 @@ export default function GameCanvas() {
           // Release → throw with charged power
           if(!mouse.left && mouse.grenadeChargeDur>0.06 && p.shootCd<=0) {
             const pct=mouse.grenadeChargeDur/1.5;              // 0..1
-            const throwSpd=180+pct*380;                        // 180–560 px/s
-            const maxRange=640;
+            const throwSpd=220+pct*480;                        // 220–700 px/s
             const rdx=worldMouseX-pcx, rdy=worldMouseY-pcy;
             const rlen=Math.hypot(rdx,rdy)||1;
-            // Clamp direction vector to max range
-            const cdist=Math.min(rlen,maxRange);
+            const cdist=Math.min(rlen,GRENADE_MAX_RANGE);
             const nx2=rdx/rlen, ny2=rdy/rlen;
             gs.bullets.push({
               id:gs.nextBulletId++,
@@ -459,36 +469,59 @@ export default function GameCanvas() {
         }
         mouse.leftClick=false;
 
-        // Grapple (right click)
+        // Grapple (right click — attach; hold to swing; release to let go)
         if(mouse.rightClick) {
-          p.grapple=true;
-          const worldMouseX=mouse.x+gs.camX;
-          const worldMouseY=mouse.y+gs.camY;
-          const cx=p.x+p.w/2, cy=p.y+p.h/2;
-          const dist=Math.hypot(worldMouseX-cx,worldMouseY-cy);
-          if(dist<=GRAPPLE_RANGE && dist>10) {
-            p.grappleX=worldMouseX; p.grappleY=worldMouseY; p.grappleOn=true;
-            // Snap boost: immediate velocity kick toward grapple point
-            const snapNx=(worldMouseX-cx)/dist, snapNy=(worldMouseY-cy)/dist;
-            p.vx+=snapNx*520; p.vy+=snapNy*520;
+          const wcx=p.x+p.w/2, wcy=p.y+p.h/2;
+          const wmx=mouse.x+gs.camX, wmy=mouse.y+gs.camY;
+          const dist=Math.hypot(wmx-wcx,wmy-wcy);
+          if(dist<=GRAPPLE_RANGE && dist>20) {
+            // Try to snap to nearest platform surface near the target
+            let snapX=wmx, snapY=wmy;
+            let snapped=false;
+            for(const plat of gs.platforms) {
+              // Check if grapple point is near platform top surface
+              if(wmx>=plat.x && wmx<=plat.x+plat.w &&
+                 wmy>=plat.y-20 && wmy<=plat.y+plat.h+20) {
+                snapX=wmx; snapY=plat.y;
+                snapped=true; break;
+              }
+            }
+            if(!snapped) { snapX=wmx; snapY=wmy; }
+            p.grappleX=snapX; p.grappleY=snapY;
+            p.grappleLen=Math.hypot(snapX-wcx,snapY-wcy);
+            p.grappleOn=true; p.grapple=true;
+            // Initial burst toward anchor
+            const nx=(snapX-wcx)/p.grappleLen, ny=(snapY-wcy)/p.grappleLen;
+            p.vx+=nx*460; p.vy+=ny*460;
+            spawnParticles(gs,snapX,snapY,4,120,230,255,150);
           }
           mouse.rightClick=false;
         }
         if(!mouse.right) { p.grapple=false; p.grappleOn=false; }
 
-        // Apply grapple force (strong continuous pull)
+        // Apply grapple — rope-constraint pendulum physics
         if(p.grappleOn && p.grapple) {
           const cx=p.x+p.w/2, cy=p.y+p.h/2;
           const dx=p.grappleX-cx, dy=p.grappleY-cy;
           const dist=Math.hypot(dx,dy);
-          if(dist>18) {
-            p.vx+=dx/dist*GRAPPLE_FORCE*dt;
-            p.vy+=dy/dist*GRAPPLE_FORCE*dt;
-            // Allow much higher speed while grappling
+          if(dist<8) { p.grappleOn=false; }
+          else {
+            const nx=dx/dist, ny=dy/dist;
+            // Strong pull force toward anchor
+            p.vx+=nx*GRAPPLE_FORCE*dt;
+            p.vy+=ny*GRAPPLE_FORCE*dt;
+            // Rope length constraint: if beyond rope length, clamp position and remove outward velocity
+            if(dist>p.grappleLen) {
+              // Correct position back onto rope circle
+              const excess=dist-p.grappleLen;
+              p.x+=nx*excess; p.y+=ny*excess;
+              // Remove velocity component pointing away from anchor (outward)
+              const vDotN=p.vx*nx+p.vy*ny;
+              if(vDotN<0) { p.vx-=vDotN*nx*0.85; p.vy-=vDotN*ny*0.85; }
+            }
+            // Speed cap while grappling
             const spd=Math.hypot(p.vx,p.vy);
-            if(spd>1600){ p.vx=p.vx/spd*1600; p.vy=p.vy/spd*1600; }
-          } else {
-            p.grappleOn=false;
+            if(spd>1800){ p.vx=p.vx/spd*1800; p.vy=p.vy/spd*1800; }
           }
         }
 
@@ -609,29 +642,38 @@ export default function GameCanvas() {
               } else { e.vx=e.dir*cfg.spd*0.3; }
 
             } else if(e.type==='flyer') {
-              // ── FLYING ── float above player, dive-strike after wind-up
+              // ── SERAPHIM ── float above player, fire laser beams
               if(inDet) {
-                e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
-                const targetY=p.y-115;
-                e.vy+=(targetY-e.y)*2.8*dt - e.vy*0.06;
-                if(inAtk) {
-                  if(e.hesTimer<=0 && e.atkTimer<=0) e.hesTimer=cfg.hes;
+                // Keep horizontal distance ~280px from player, float above
+                const ideal=280;
+                if(distP>ideal+30) e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
+                else if(distP<ideal-30) e.vx=-dxp/Math.abs(dxp||1)*cfg.spd*0.6;
+                else e.vx*=0.88;
+                const targetY=p.y-160;
+                e.vy+=(targetY-e.y)*3.2*dt - e.vy*0.07;
+                // Shoot lasers
+                e.shootCd-=dt;
+                if(e.shootCd<=0 && inAtk) {
+                  if(e.hesTimer<=0) e.hesTimer=cfg.hes;
                   if(e.hesTimer>0) {
                     e.hesTimer-=dt;
-                    e.vx*=0.6; // hover before dive
+                    // Charge glow — flash
+                    if(Math.floor(e.hesTimer*12)%2===0)
+                      spawnParticles(gs,ex,ey,2,255,230,100,80);
                     if(e.hesTimer<=0) {
-                      e.vy=420; // dive!
-                      if(p.parryActive){ e.vy=-280; e.stunned=1.1; spawnParticles(gs,ex,ey,9,100,200,255,210); }
-                      else if(p.inv<=0){ p.hp-=cfg.adm; p.inv=INV_DUR; spawnParticles(gs,px,py,6,200,80,255,170); if(p.hp<=0){p.dead=true;gs.phase='dead';} }
-                      e.atkTimer=cfg.acd; e.hesTimer=0;
+                      // Fire 2 laser beams
+                      spawnSeraphimLaser(gs,ex,ey+e.h*0.1,px,py);
+                      spawnSeraphimLaser(gs,ex,ey+e.h*0.1,px,py);
+                      e.shootCd=cfg.acd; e.hesTimer=0;
+                      spawnParticles(gs,ex,ey,8,255,240,120,200);
                     }
                   }
-                } else e.hesTimer=0;
+                }
               } else {
                 e.vx*=0.9;
-                e.vy+=(GROUND_Y-230-e.y)*1.4*dt;
+                e.vy+=(GROUND_Y-260-e.y)*1.4*dt;
               }
-              e.vy=Math.max(-230,Math.min(450,e.vy));
+              e.vy=Math.max(-260,Math.min(320,e.vy));
             }
 
             if(e.hesTimer<0) e.hesTimer=0;
@@ -769,13 +811,31 @@ export default function GameCanvas() {
 
         b.x+=b.vx*dt; b.y+=b.vy*dt;
 
-        // Platform collision for grenades
+        // Platform collision — grenades bounce; all other bullets are blocked
         if(b.btype==='grenade') {
           for(const plat of gs.platforms) {
-            if(aabb(b.x,b.y,b.w,b.h,plat.x,plat.y,plat.w,plat.h) && b.bounced<2) {
-              b.vy*=-0.6; b.vx*=0.7; b.bounced++;
+            if(aabb(b.x,b.y,b.w,b.h,plat.x,plat.y,plat.w,plat.h) && b.bounced<3) {
+              b.vy*=-0.55; b.vx*=0.75; b.bounced++;
             }
           }
+        } else if(b.btype!=='laser') {
+          // Regular bullets (pistol, shotgun, enemy) stop on platforms
+          for(const plat of gs.platforms) {
+            if(aabb(b.x,b.y,b.w,b.h,plat.x,plat.y,plat.w,plat.h)) {
+              spawnParticles(gs,b.x,b.y,2,180,180,180,80);
+              b.hp=0; break;
+            }
+          }
+          if(b.hp<=0) continue;
+        } else {
+          // Lasers blocked by platforms
+          for(const plat of gs.platforms) {
+            if(aabb(b.x,b.y,b.w,b.h,plat.x,plat.y,plat.w,plat.h)) {
+              spawnParticles(gs,b.x,b.y,4,255,240,120,120);
+              b.hp=0; break;
+            }
+          }
+          if(b.hp<=0) continue;
         }
 
         // Bullet lifetime (off screen)
@@ -979,92 +1039,172 @@ export default function GameCanvas() {
 
 // ─── SPRITE HELPERS ──────────────────────────────────────────────────────────
 
-// V1-style player (white mechanical android, red visor)
+// Human side-profile player with smooth walk cycle
 function drawV1(ctx:CanvasRenderingContext2D, p:Player, camX:number, camY:number, now:number) {
   if(p.dead) return;
   const sx=p.x+p.w/2-camX, sy=p.y+p.h-camY;
-  const moving=Math.abs(p.vx)>20;
-  const leg=moving?Math.sin(now*0.013)*9:0;
-  const arm=moving?Math.sin(now*0.013+Math.PI)*6:0;
   const isParry=p.parryActive;
   const isInv=p.inv>0;
-  if(isInv && Math.floor(now/75)%2===0) return;
+  if(isInv && Math.floor(now/70)%2===0) return;
+
+  const t=now*0.0095;
+  const moving=Math.abs(p.vx)>20;
+  const inAir=!p.grounded;
+  // Walk cycle: smooth sinusoidal limb swing
+  const legFwd=moving?Math.sin(t*1.9)*18:0;      // forward leg
+  const legBk=moving?Math.sin(t*1.9+Math.PI)*18:0; // back leg
+  const armFwd=moving?Math.sin(t*1.9+Math.PI)*14:0;
+  const armBk=moving?Math.sin(t*1.9)*10:0;
+  const bodyBob=moving?Math.abs(Math.sin(t*1.9))*2:0;
+  // Air pose — tuck legs
+  const airLeg=inAir?-10:0;
+  const torsoLean=moving?0.08:0; // slight forward lean when running
 
   ctx.save();
-  ctx.translate(sx,sy);
+  ctx.translate(sx, sy-bodyBob);
   if(!p.facingRight) ctx.scale(-1,1);
 
-  ctx.shadowColor=isParry?'#4499ff':'#ffffff';
-  ctx.shadowBlur=isParry?22:10;
+  ctx.shadowColor=isParry?'#44aaff':'#aaddff';
+  ctx.shadowBlur=isParry?20:6;
 
-  // ─ Legs ─
-  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
-  ctx.fillRect(-11,-14-leg,8,15+leg);
-  ctx.fillStyle=isParry?'#ccddff':'#eeeeee';
-  ctx.fillRect(-12,-2-leg,11,5);  // left boot
-  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
-  ctx.fillRect(3,-14+leg,8,15-leg);
-  ctx.fillStyle=isParry?'#ccddff':'#eeeeee';
-  ctx.fillRect(2,-2+leg,11,5);    // right boot
+  const skin=isParry?'#c8e8ff':'#f5d0a0';
+  const cloth=isParry?'#5588cc':'#2a4a7a';
+  const clothDk=isParry?'#3366aa':'#162840';
+  const clothLt=isParry?'#7aaae0':'#3d6099';
+  const boot=isParry?'#335588':'#1a1a2e';
+  const gunMetal='#444';
 
-  // ─ Left arm (swings back) ─
-  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
-  ctx.fillRect(-17,-43+arm,7,17);
+  // ── Back leg (behind body) ──
+  ctx.save();
+  ctx.translate(-3, 0);
+  ctx.rotate((-legBk+airLeg)*Math.PI/180);
+  ctx.fillStyle=clothDk;
+  ctx.fillRect(-4,-2,7,20); // thigh
+  ctx.fillRect(-3,18,6,16); // shin
+  ctx.fillStyle=boot;
+  ctx.fillRect(-4,32,9,6); // boot
+  ctx.fillRect(3,32,5,3);  // toe
+  ctx.restore();
 
-  // ─ Right arm + gun ─
-  ctx.fillStyle=isParry?'#aaccee':'#cccccc';
-  ctx.fillRect(10,-43-arm,7,17);
-  ctx.fillStyle='#777';
-  ctx.fillRect(15,-30-arm,18,5); // barrel
+  // ── Back arm (behind body, swings forward) ──
+  ctx.save();
+  ctx.translate(-4,-39);
+  ctx.rotate((armBk)*Math.PI/180);
+  ctx.fillStyle=clothDk;
+  ctx.fillRect(-3,0,6,14); // upper arm
+  ctx.fillStyle=skin;
+  ctx.fillRect(-2,13,5,11); // forearm/hand
+  ctx.restore();
+
+  // ── Torso ──
+  ctx.save();
+  ctx.rotate(torsoLean);
+  ctx.fillStyle=cloth;
+  // Side-profile torso: narrow width, taller
+  ctx.beginPath();
+  ctx.moveTo(-7,-46); ctx.lineTo(7,-46);
+  ctx.lineTo(9,-16); ctx.lineTo(-5,-16);
+  ctx.closePath(); ctx.fill();
+  // Jacket highlight
+  ctx.fillStyle=clothLt;
+  ctx.fillRect(-5,-44,4,28);
+  // Belt
+  ctx.fillStyle=clothDk;
+  ctx.fillRect(-6,-18,15,4);
+  ctx.restore();
+
+  // ── Front leg ──
+  ctx.save();
+  ctx.translate(3,0);
+  ctx.rotate((legFwd+airLeg)*Math.PI/180);
+  ctx.fillStyle=cloth;
+  ctx.fillRect(-4,-2,7,20);
+  ctx.fillStyle=clothLt;
+  ctx.fillRect(-3,-2,3,20);
+  ctx.fillStyle=cloth;
+  ctx.fillRect(-3,18,6,16);
+  ctx.fillStyle=boot;
+  ctx.fillRect(-4,32,10,6);
+  ctx.fillRect(4,32,5,3);
+  ctx.restore();
+
+  // ── Front arm + gun (raised toward aim direction) ──
+  ctx.save();
+  ctx.translate(5,-38);
+  ctx.rotate((-armFwd-5)*Math.PI/180);
+  ctx.fillStyle=cloth;
+  ctx.fillRect(-3,0,6,14);
+  ctx.fillStyle=skin;
+  ctx.fillRect(-2,13,5,10);
+  // Gun
+  ctx.fillStyle=gunMetal;
+  ctx.fillRect(3,8,20,5);   // barrel
   ctx.fillStyle='#555';
-  ctx.fillRect(15,-33-arm,7,4);  // sight
-  ctx.fillStyle='#666';
-  ctx.fillRect(31,-32-arm,4,8);  // muzzle
+  ctx.fillRect(3,5,9,5);    // grip/slide
+  ctx.fillStyle='#333';
+  ctx.fillRect(21,6,4,8);   // muzzle
+  if(isParry){
+    ctx.fillStyle='rgba(100,180,255,0.7)';
+    ctx.shadowColor='#4499ff'; ctx.shadowBlur=12;
+    ctx.fillRect(0,5,26,8);
+    ctx.shadowBlur=0;
+  }
+  ctx.restore();
 
-  // ─ Torso ─
-  ctx.fillStyle=isParry?'#ccddf5':'#eeeeee';
-  ctx.fillRect(-12,-45,24,32);
-  // Shoulder pads
-  ctx.fillStyle=isParry?'#ddeeff':'#ffffff';
-  ctx.fillRect(-18,-46,8,9);
-  ctx.fillRect(10,-46,8,9);
-  // Chest plate lines
-  ctx.fillStyle='rgba(0,0,0,0.14)';
-  ctx.fillRect(-10,-39,20,2);
-  ctx.fillRect(-10,-30,20,2);
-  ctx.fillRect(-10,-21,20,2);
-
-  // ─ Head (angular block) ─
-  ctx.fillStyle=isParry?'#ddeeff':'#ffffff';
-  ctx.fillRect(-10,-64,20,20);
-  ctx.fillStyle=isParry?'#bbccee':'#e0e0e0';
-  ctx.fillRect(-14,-62,5,14);   // left ear
-  ctx.fillRect(9,-62,5,14);    // right ear
-
-  // ─ Red visor (V1 signature) ─
-  ctx.fillStyle=isParry?'#3388ff':'#ff1111';
-  ctx.shadowColor=isParry?'#3388ff':'#ff0000';
-  ctx.shadowBlur=14;
-  ctx.fillRect(-7,-56,18,6);   // main visor
-  ctx.fillStyle=isParry?'#88aaff':'#ff6655';
-  ctx.fillRect(-5,-56,5,6);   // bright segment
+  // ── Head (side profile) ──
+  ctx.save();
+  ctx.rotate(torsoLean*0.5);
+  // Skull/hair
+  ctx.fillStyle=isParry?'#334':'#1a1a1a';
+  ctx.beginPath();
+  ctx.ellipse(4,-56,10,11,0,0,Math.PI*2); ctx.fill();
+  // Face skin
+  ctx.fillStyle=skin;
+  ctx.beginPath();
+  ctx.ellipse(5,-55,8,9,0.1,0,Math.PI*2); ctx.fill();
+  // Eye
+  ctx.fillStyle='#1a1a1a';
+  ctx.beginPath(); ctx.ellipse(10,-55,2.5,2,0,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=isParry?'#88ccff':'#ff2222';
+  ctx.shadowColor=isParry?'#88ccff':'#ff0000'; ctx.shadowBlur=8;
+  ctx.beginPath(); ctx.ellipse(10,-55,1.5,1.5,0,0,Math.PI*2); ctx.fill();
+  ctx.shadowBlur=0;
+  // Nose bridge
+  ctx.fillStyle='rgba(0,0,0,0.2)';
+  ctx.fillRect(11,-58,3,4);
+  // Jaw line
+  ctx.fillStyle=skin;
+  ctx.beginPath();
+  ctx.moveTo(0,-50); ctx.lineTo(13,-50); ctx.lineTo(14,-46); ctx.lineTo(1,-46);
+  ctx.closePath(); ctx.fill();
+  ctx.restore();
 
   ctx.shadowBlur=0;
   ctx.restore();
 
-  // Grapple rope
+  // ── Grapple rope ──
   if(p.grappleOn||p.grapple) {
     const gx=p.grappleX-camX, gy=p.grappleY-camY;
+    const rx=p.x+p.w/2-camX, ry=sy-38;
     ctx.save();
-    ctx.strokeStyle='rgba(120,220,255,0.9)';
-    ctx.lineWidth=2.5;
-    ctx.setLineDash([6,3]);
-    ctx.lineDashOffset=-(now*0.09%9);
-    ctx.beginPath(); ctx.moveTo(sx,sy-30); ctx.lineTo(gx,gy); ctx.stroke();
+    // Rope with slight droop (catenary approximation via quadratic)
+    const midX=(rx+gx)/2, midY=(ry+gy)/2 + Math.hypot(gx-rx,gy-ry)*0.12;
+    ctx.strokeStyle='rgba(120,220,255,0.92)';
+    ctx.lineWidth=2;
+    ctx.setLineDash([5,4]);
+    ctx.lineDashOffset=-(now*0.08%9);
+    ctx.beginPath();
+    ctx.moveTo(rx,ry);
+    ctx.quadraticCurveTo(midX,midY,gx,gy);
+    ctx.stroke();
     ctx.setLineDash([]); ctx.lineDashOffset=0;
+    // Anchor point
     ctx.fillStyle='#88eeff';
-    ctx.shadowColor='#88eeff'; ctx.shadowBlur=8;
+    ctx.shadowColor='#88eeff'; ctx.shadowBlur=10;
     ctx.beginPath(); ctx.arc(gx,gy,5,0,Math.PI*2); ctx.fill();
+    // Hook
+    ctx.strokeStyle='#44ccff'; ctx.lineWidth=2; ctx.shadowBlur=0;
+    ctx.beginPath(); ctx.arc(gx,gy+3,4,0,Math.PI); ctx.stroke();
     ctx.shadowBlur=0;
     ctx.restore();
   }
@@ -1351,82 +1491,133 @@ function drawGrenadier(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:
   ctx.shadowBlur=0; ctx.restore();
 }
 
-// Flyer – purple bat-winged enemy that hovers and dives (FLYING/PURPLE)
+// Seraphim – angelic six-winged being of gold and white, shoots holy lasers
 function drawFlyer(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:number, now:number) {
-  const sx=e.x+e.w/2-camX, sy=e.y+e.h/2-camY; // center-based (no ground ref)
+  const sx=e.x+e.w/2-camX, sy=e.y+e.h/2-camY;
   const isS=e.stunned>0;
-  const flap=Math.sin(now*0.013+e.id*1.9);
-  const dive=e.vy>150; // diving down
-  const bc=isS?'#4488cc':'#8822cc';
-  const dk=isS?'#2255aa':'#551188';
-  const ec=isS?'#88ccff':'#dd44ff';
+  const t=now*0.0062+e.id*1.7;
+  const hover=Math.sin(t)*5; // gentle float
+  const flap=Math.sin(t*2.1);  // wing beat
+  const charging=e.hesTimer>0;
+
+  const gold=isS?'#88aadd':'#f5c842';
+  const goldLt=isS?'#aaccee':'#fff0a0';
+  const goldDk=isS?'#4466aa':'#c8960a';
+  const white=isS?'#aaccee':'#fffce8';
+  const glow=isS?'#88aaff':'#ffe040';
 
   ctx.save();
-  ctx.translate(sx,sy);
+  ctx.translate(sx, sy+hover);
   if(e.vx<-5) ctx.scale(-1,1);
 
-  // ── Wings (bat-membrane) ──
-  ctx.fillStyle=isS?'#3366aa':'#6611aa';
-  ctx.shadowColor=isS?'#88aaff':'#aa33ff'; ctx.shadowBlur=10;
-  const wingDrop=dive?6:flap*10;
-  // Left wing
+  // ── Halo (ring above head) ──
+  ctx.save();
+  ctx.translate(0,-44);
+  const haloPulse=charging?1+Math.sin(now*0.025)*0.4:1;
+  ctx.strokeStyle=glow;
+  ctx.shadowColor=glow; ctx.shadowBlur=charging?20:12;
+  ctx.lineWidth=3*haloPulse;
+  ctx.beginPath(); ctx.ellipse(0,0,14,4.5,0,0,Math.PI*2); ctx.stroke();
+  // Halo shimmer
+  ctx.fillStyle=goldLt; ctx.globalAlpha=0.5*haloPulse;
+  ctx.beginPath(); ctx.ellipse(0,0,14,4.5,0,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1; ctx.shadowBlur=0;
+  ctx.restore();
+
+  // ── Upper wings (largest pair — spread wide) ──
+  ctx.shadowColor=glow; ctx.shadowBlur=10;
+  const upperFlap=flap*16;
+  ctx.fillStyle=isS?'rgba(100,150,220,0.7)':'rgba(255,245,180,0.75)';
+  // Left upper wing
   ctx.beginPath();
-  ctx.moveTo(-6,-2);
-  ctx.quadraticCurveTo(-42,-22+wingDrop,-36,-4+wingDrop*0.4);
-  ctx.quadraticCurveTo(-22,8,-6,6);
+  ctx.moveTo(-5,-22);
+  ctx.quadraticCurveTo(-50,-38+upperFlap,-46,-14+upperFlap*0.5);
+  ctx.quadraticCurveTo(-24,-4,-5,-14);
   ctx.closePath(); ctx.fill();
-  // Right wing
+  // Right upper wing
   ctx.beginPath();
-  ctx.moveTo(6,-2);
-  ctx.quadraticCurveTo(42,-22+wingDrop,36,-4+wingDrop*0.4);
-  ctx.quadraticCurveTo(22,8,6,6);
+  ctx.moveTo(5,-22);
+  ctx.quadraticCurveTo(50,-38+upperFlap,46,-14+upperFlap*0.5);
+  ctx.quadraticCurveTo(24,-4,5,-14);
   ctx.closePath(); ctx.fill();
 
-  // Wing membrane veins
-  ctx.strokeStyle=dk; ctx.lineWidth=1.5; ctx.globalAlpha=0.5;
-  ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(-36,-4+wingDrop*0.4); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(-28,5+wingDrop*0.3); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(36,-4+wingDrop*0.4); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(28,5+wingDrop*0.3); ctx.stroke();
+  // Wing feather lines
+  ctx.strokeStyle=goldDk; ctx.lineWidth=1; ctx.globalAlpha=0.5;
+  for(let f=0;f<4;f++){
+    const fx=f*10+8;
+    ctx.beginPath(); ctx.moveTo(-5,-18); ctx.lineTo(-fx,-28+upperFlap*(0.3+f*0.1)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(5,-18); ctx.lineTo(fx,-28+upperFlap*(0.3+f*0.1)); ctx.stroke();
+  }
   ctx.globalAlpha=1;
 
-  // ── Body ──
-  ctx.shadowBlur=10;
-  ctx.fillStyle=bc;
-  ctx.fillRect(-11,-14,22,20);
-  // Chest detail
-  ctx.fillStyle=dk;
-  ctx.fillRect(-8,-12,16,4);
-  ctx.fillRect(-8,-6,16,4);
+  // ── Middle wings (medium) ──
+  const midFlap=Math.sin(t*2.1+0.8)*10;
+  ctx.fillStyle=isS?'rgba(120,160,230,0.65)':'rgba(255,250,200,0.65)';
+  ctx.beginPath();
+  ctx.moveTo(-4,-8);
+  ctx.quadraticCurveTo(-38,-12+midFlap,-34,4+midFlap*0.4);
+  ctx.quadraticCurveTo(-18,10,-4,4);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(4,-8);
+  ctx.quadraticCurveTo(38,-12+midFlap,34,4+midFlap*0.4);
+  ctx.quadraticCurveTo(18,10,4,4);
+  ctx.closePath(); ctx.fill();
+
+  // ── Lower wings (smallest, swept down) ──
+  const lwFlap=Math.sin(t*2.1+1.6)*7;
+  ctx.fillStyle=isS?'rgba(100,140,210,0.55)':'rgba(255,240,160,0.55)';
+  ctx.beginPath();
+  ctx.moveTo(-4,4);
+  ctx.quadraticCurveTo(-26,14+lwFlap,-22,24+lwFlap*0.5);
+  ctx.quadraticCurveTo(-10,26,-4,14);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(4,4);
+  ctx.quadraticCurveTo(26,14+lwFlap,22,24+lwFlap*0.5);
+  ctx.quadraticCurveTo(10,26,4,14);
+  ctx.closePath(); ctx.fill();
+
+  // ── Robed body ──
+  ctx.shadowColor=glow; ctx.shadowBlur=8;
+  ctx.fillStyle=white;
+  ctx.beginPath();
+  ctx.moveTo(-9,-24); ctx.lineTo(9,-24);
+  ctx.lineTo(12,14); ctx.lineTo(-12,14);
+  ctx.closePath(); ctx.fill();
+  // Robe fold lines
+  ctx.fillStyle=goldDk; ctx.globalAlpha=0.35;
+  ctx.fillRect(-1,-22,2,34);
+  ctx.fillRect(-5,-10,1,20);
+  ctx.fillRect(4,-10,1,20);
+  ctx.globalAlpha=1;
+  // Chest band
+  ctx.fillStyle=gold;
+  ctx.fillRect(-9,-14,18,4);
+  ctx.fillRect(-9,-4,18,3);
 
   // ── Head ──
-  ctx.fillStyle=bc;
-  ctx.fillRect(-9,-26,18,14);
-  // Horns/ears
-  ctx.fillStyle=dk;
-  ctx.fillRect(-11,-33,4,9);
-  ctx.fillRect(7,-33,4,9);
-  ctx.fillStyle=bc;
-  ctx.fillRect(-9,-31,3,6);
-  ctx.fillRect(6,-31,3,6);
+  ctx.fillStyle=white;
+  ctx.beginPath(); ctx.ellipse(0,-32,8,9,0,0,Math.PI*2); ctx.fill();
+  // Face veil
+  ctx.fillStyle=goldDk; ctx.globalAlpha=0.25;
+  ctx.fillRect(-8,-38,16,14);
+  ctx.globalAlpha=1;
 
-  // ── Glowing eyes ──
-  ctx.fillStyle=ec;
-  ctx.shadowColor=ec; ctx.shadowBlur=12;
-  ctx.beginPath(); ctx.arc(-3,-20,3.5,0,Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(3,-20,3.5,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle=isS?'#cceeff':'#ffffff';
-  ctx.beginPath(); ctx.arc(-3,-20,1.5,0,Math.PI*2); ctx.fill();
-  ctx.beginPath(); ctx.arc(3,-20,1.5,0,Math.PI*2); ctx.fill();
+  // ── Glowing eyes (holy gold) ──
+  ctx.fillStyle=charging?'#ffffff':gold;
+  ctx.shadowColor=charging?'#ffffff':glow; ctx.shadowBlur=charging?20:14;
+  ctx.beginPath(); ctx.arc(-3,-31,3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(3,-31,3,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#fff';
+  ctx.beginPath(); ctx.arc(-3,-31,1.2,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(3,-31,1.2,0,Math.PI*2); ctx.fill();
 
-  // Claws when diving
-  if(dive) {
-    ctx.shadowBlur=0;
-    ctx.fillStyle=bc;
-    ctx.fillRect(-8,6,5,12); ctx.fillRect(3,6,5,12);
-    ctx.fillStyle=dk;
-    ctx.fillRect(-9,16,3,6); ctx.fillRect(-6,17,3,5);
-    ctx.fillRect(2,16,3,6); ctx.fillRect(5,17,3,5);
+  // Laser charge glow
+  if(charging){
+    ctx.shadowColor='#fffbe0'; ctx.shadowBlur=28;
+    ctx.fillStyle='rgba(255,250,180,0.18)';
+    ctx.beginPath(); ctx.arc(0,-10,26,0,Math.PI*2); ctx.fill();
   }
 
   ctx.shadowBlur=0; ctx.restore();
@@ -1653,6 +1844,25 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
         ctx.arc(bsx,bsy,9,-Math.PI/2,-Math.PI/2+Math.PI*2*(1-b.fuse/WEAPONS[2].fuse));
         ctx.stroke();
       }
+    } else if(b.btype==='laser') {
+      // Holy seraphim laser — elongated golden beam
+      const angle=Math.atan2(b.vy,b.vx);
+      const len=22, w=3;
+      ctx.save();
+      ctx.translate(bsx,bsy);
+      ctx.rotate(angle);
+      const laserGrad=ctx.createLinearGradient(-len,0,len,0);
+      laserGrad.addColorStop(0,'rgba(255,240,100,0)');
+      laserGrad.addColorStop(0.35,'rgba(255,240,80,0.95)');
+      laserGrad.addColorStop(0.65,'rgba(255,255,220,1)');
+      laserGrad.addColorStop(1,'rgba(255,240,100,0)');
+      ctx.fillStyle=laserGrad;
+      ctx.shadowColor='#ffe060'; ctx.shadowBlur=14;
+      ctx.fillRect(-len,-w/2,len*2,w);
+      // bright core
+      ctx.fillStyle='rgba(255,255,255,0.9)';
+      ctx.fillRect(-len*0.5,-1,len,2);
+      ctx.restore();
     } else if(b.fromPlayer) {
       const col=b.btype==='shotgun'?'#ffaa22':'#ffee22';
       ctx.fillStyle=col; ctx.shadowColor=col; ctx.shadowBlur=7;
