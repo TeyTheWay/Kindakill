@@ -98,6 +98,8 @@ interface GS {
   nextBulletId: number;
   nextParticleId: number;
   spawnTimer: number;
+  guaranteeTimer: number;
+  spawnedThisWindow: number;
   worldRight: number;
   grenadeCharge: number;
   aimX: number; aimY: number;
@@ -376,7 +378,7 @@ function initGame(): GS {
     camX:0, camY:0,
     phase:'playing',
     nextPlatId:10, nextEnemyId:0, nextBulletId:0, nextParticleId:0,
-    spawnTimer:3, worldRight:1200, grenadeCharge:0, aimX:0, aimY:0,
+    spawnTimer:3, guaranteeTimer:20, spawnedThisWindow:0, worldRight:1200, grenadeCharge:0, aimX:0, aimY:0,
   };
 }
 
@@ -904,8 +906,18 @@ export default function GameCanvas() {
         gs.spawnTimer-=dt;
         if(gs.spawnTimer<=0 && !gs.bossSpawned) {
           const maxEnemies=gs.kills<10?6:10;
-          if(gs.enemies.length<maxEnemies){ spawnEnemyWave(gs); spawnEnemyWave(gs); }
+          if(gs.enemies.length<maxEnemies){ spawnEnemyWave(gs); spawnEnemyWave(gs); gs.spawnedThisWindow+=2; }
           gs.spawnTimer=randBetween(1.5,3);
+        }
+        // Guarantee: at least 10 mobs spawned every 20 seconds
+        if(!gs.bossSpawned) {
+          gs.guaranteeTimer-=dt;
+          if(gs.guaranteeTimer<=0) {
+            const deficit=Math.max(0,10-gs.spawnedThisWindow);
+            for(let i=0;i<deficit;i++) spawnEnemyWave(gs);
+            gs.spawnedThisWindow=0;
+            gs.guaranteeTimer=20;
+          }
         }
 
         // Boss spawn
