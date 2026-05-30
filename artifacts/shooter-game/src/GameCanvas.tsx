@@ -329,7 +329,7 @@ function explodeMissile(gs:GS,x:number,y:number,fromPlayer:boolean) {
     if(dist<radius){ const dmg=Math.round(100*(1-dist/radius)+20); e.hp-=dmg; }
   };
   if(fromPlayer){
-    gs.enemies.forEach(e=>{ if(!e.dead) checkHit(e); });
+    gs.enemies.forEach(e=>{ if(!e.dead){ const cx=e.x+e.w/2,cy=e.y+e.h/2; if(Math.hypot(cx-x,cy-y)<radius) e.hp=0; } });
     if(gs.boss&&!gs.boss.dead) checkHit(gs.boss);
   } else {
     if(!gs.player.dead) checkHit(gs.player);
