@@ -356,7 +356,7 @@ function autoAim(gs:GS,fromX:number,fromY:number,dx:number,dy:number,range:numbe
 }
 
 // ─── GAME INIT ───────────────────────────────────────────────────────────────
-function initGame(): GS {
+function initGame(carryScore=0): GS {
   const plats:Platform[]=[
     {id:0,x:-500,y:GROUND_Y,w:3000,h:80},
     {id:1,x:300,y:GROUND_Y-150,w:200,h:20},
@@ -374,7 +374,7 @@ function initGame(): GS {
   };
   return {
     player, enemies:[], boss:null, bullets:[], platforms:plats, particles:[], blasts:[],
-    score:0, kills:0, totalKills:0, bossSpawned:false, postBoss:false,
+    score:carryScore, kills:0, totalKills:0, bossSpawned:false, postBoss:false,
     camX:0, camY:0,
     phase:'playing',
     nextPlatId:10, nextEnemyId:0, nextBulletId:0, nextParticleId:0,
@@ -679,7 +679,7 @@ export default function GameCanvas() {
       if(gs.phase==='dead' || gs.phase==='win') {
         // Restart
         if(keys.has('KeyR') && !prevKeysRef.current.has('KeyR')) {
-          gsRef.current=initGame();
+          gsRef.current=initGame(gsRef.current.score);
           prevKeysRef.current=new Set();
           return;
         }
