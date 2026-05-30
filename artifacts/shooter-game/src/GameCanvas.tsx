@@ -44,6 +44,7 @@ interface Player extends Entity {
   parryActive:boolean; parryTimer:number; parryFlash:number;
   weapon:number; shootCd:number;
   grapple:boolean; grappleX:number; grappleY:number; grappleOn:boolean; grappleLen:number;
+  grappleTargetId:number; // -2=static, -1=boss, >=0=enemy id
   inv:number; dead:boolean; facingRight:boolean;
   sliding:boolean; slideCd:number; slideTimer:number;
 }
@@ -310,7 +311,7 @@ function initGame(): GS {
     jumps:2,grounded:false,
     parryActive:false,parryTimer:0,parryFlash:0,
     weapon:0,shootCd:0,
-    grapple:false,grappleX:0,grappleY:0,grappleOn:false,grappleLen:0,
+    grapple:false,grappleX:0,grappleY:0,grappleOn:false,grappleLen:0,grappleTargetId:-2,
     inv:0,dead:false,facingRight:true,
     sliding:false,slideCd:0,slideTimer:0,
   };
@@ -495,53 +496,83 @@ export default function GameCanvas() {
           const wmx=mouse.x+gs.camX, wmy=mouse.y+gs.camY;
           const dist=Math.hypot(wmx-wcx,wmy-wcy);
           if(dist<=GRAPPLE_RANGE && dist>20) {
-            // Try to snap to nearest platform surface near the target
+            // Priority: enemies → boss → platform snap → free point
             let snapX=wmx, snapY=wmy;
-            let snapped=false;
-            for(const plat of gs.platforms) {
-              // Check if grapple point is near platform top surface
-              if(wmx>=plat.x && wmx<=plat.x+plat.w &&
-                 wmy>=plat.y-20 && wmy<=plat.y+plat.h+20) {
-                snapX=wmx; snapY=plat.y;
-                snapped=true; break;
+            let targetId=-2;
+
+            // Check enemies near cursor
+            let bestEDist=64;
+            for(const e of gs.enemies) {
+              if(e.dead) continue;
+              const ecx=e.x+e.w/2, ecy=e.y+e.h/2;
+              const d=Math.hypot(wmx-ecx,wmy-ecy);
+              if(d<bestEDist) { bestEDist=d; snapX=ecx; snapY=ecy; targetId=e.id; }
+            }
+            // Check boss
+            if(targetId===-2 && gs.boss && !gs.boss.dead) {
+              const bcx=gs.boss.x+gs.boss.w/2, bcy=gs.boss.y+gs.boss.h/2;
+              if(Math.hypot(wmx-bcx,wmy-bcy)<80) { snapX=bcx; snapY=bcy; targetId=-1; }
+            }
+            // Platform snap if no enemy target
+            if(targetId===-2) {
+              for(const plat of gs.platforms) {
+                if(wmx>=plat.x && wmx<=plat.x+plat.w &&
+                   wmy>=plat.y-20 && wmy<=plat.y+plat.h+20) {
+                  snapX=wmx; snapY=plat.y; break;
+                }
               }
             }
-            if(!snapped) { snapX=wmx; snapY=wmy; }
+
+            const ropeLen=Math.hypot(snapX-wcx,snapY-wcy);
             p.grappleX=snapX; p.grappleY=snapY;
-            p.grappleLen=Math.hypot(snapX-wcx,snapY-wcy);
+            p.grappleLen=ropeLen;
+            p.grappleTargetId=targetId;
             p.grappleOn=true; p.grapple=true;
             // Initial burst toward anchor
-            const nx=(snapX-wcx)/p.grappleLen, ny=(snapY-wcy)/p.grappleLen;
-            p.vx+=nx*460; p.vy+=ny*460;
-            spawnParticles(gs,snapX,snapY,4,120,230,255,150);
+            const nx=(snapX-wcx)/ropeLen, ny=(snapY-wcy)/ropeLen;
+            p.vx+=nx*500; p.vy+=ny*500;
+            spawnParticles(gs,snapX,snapY,5,120,230,255,160);
           }
           mouse.rightClick=false;
         }
-        if(!mouse.right) { p.grapple=false; p.grappleOn=false; }
+        if(!mouse.right) { p.grapple=false; p.grappleOn=false; p.grappleTargetId=-2; }
+
+        // Track grapple target position each frame
+        if(p.grappleOn && p.grapple) {
+          if(p.grappleTargetId>=0) {
+            const te=gs.enemies.find(e=>!e.dead&&e.id===p.grappleTargetId);
+            if(te) { p.grappleX=te.x+te.w/2; p.grappleY=te.y+te.h/2; }
+            else { p.grappleOn=false; } // target died — detach
+          } else if(p.grappleTargetId===-1) {
+            if(gs.boss && !gs.boss.dead) { p.grappleX=gs.boss.x+gs.boss.w/2; p.grappleY=gs.boss.y+gs.boss.h/2; }
+            else { p.grappleOn=false; }
+          }
+        }
 
         // Apply grapple — rope-constraint pendulum physics
         if(p.grappleOn && p.grapple) {
           const cx=p.x+p.w/2, cy=p.y+p.h/2;
           const dx=p.grappleX-cx, dy=p.grappleY-cy;
           const dist=Math.hypot(dx,dy);
-          if(dist<8) { p.grappleOn=false; }
+          // Auto-release when very close to a live enemy/boss target
+          const closeThresh=p.grappleTargetId>=-1 && p.grappleTargetId!=-2 ? 55 : 8;
+          if(dist<closeThresh) { p.grappleOn=false; }
           else {
             const nx=dx/dist, ny=dy/dist;
-            // Strong pull force toward anchor
+            // Pull force toward anchor
             p.vx+=nx*GRAPPLE_FORCE*dt;
             p.vy+=ny*GRAPPLE_FORCE*dt;
-            // Rope length constraint: if beyond rope length, clamp position and remove outward velocity
+            // Hard rope constraint: clamp to rope length, strip outward velocity
             if(dist>p.grappleLen) {
-              // Correct position back onto rope circle
               const excess=dist-p.grappleLen;
               p.x+=nx*excess; p.y+=ny*excess;
-              // Remove velocity component pointing away from anchor (outward)
+              // Project out the velocity component pointing away from anchor
               const vDotN=p.vx*nx+p.vy*ny;
-              if(vDotN<0) { p.vx-=vDotN*nx*0.85; p.vy-=vDotN*ny*0.85; }
+              if(vDotN<0) { p.vx-=vDotN*nx; p.vy-=vDotN*ny; }
             }
             // Speed cap while grappling
             const spd=Math.hypot(p.vx,p.vy);
-            if(spd>1800){ p.vx=p.vx/spd*1800; p.vy=p.vy/spd*1800; }
+            if(spd>2000){ p.vx=p.vx/spd*2000; p.vy=p.vy/spd*2000; }
           }
         }
 
