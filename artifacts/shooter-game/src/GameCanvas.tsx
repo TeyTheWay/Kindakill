@@ -22,10 +22,14 @@ const WEAPONS = [
   { name: 'GRENADE',  cd: 0.85, dmg: 55, spd: 380, pellets: 1, spread: 0,    fuse: 2.8 },
 ];
 
-const ECFG: Record<string, { w:number;h:number;hp:number;spd:number;pts:number;col:string;det:number;atr:number;adm:number;acd:number }> = {
-  grunt:      { w:30,h:42,hp:35,spd:155,pts:50,  col:'#dd2222',det:200,atr:52, adm:15,acd:1.0 },
-  shotgunner: { w:28,h:38,hp:55,spd:85, pts:100, col:'#dd7700',det:380,atr:375,adm:11,acd:2.1 },
-  knight:     { w:36,h:48,hp:90,spd:210,pts:150, col:'#8833dd',det:310,atr:85, adm:26,acd:1.5 },
+// col = base colour (unused in sprite draw, but used for HP bars / debug)
+// melee = attacks by touching; flying = no gravity; hes = hesitation window (s)
+const ECFG: Record<string,{w:number;h:number;hp:number;spd:number;pts:number;col:string;det:number;atr:number;adm:number;acd:number;melee:boolean;flying:boolean;hes:number}> = {
+  grunt:     {w:30,h:42,hp:35, spd:148,pts:50,  col:'#dd2222',det:210,atr:56, adm:14,acd:1.3, melee:true,  flying:false,hes:0.40},
+  knight:    {w:34,h:46,hp:70, spd:168,pts:100, col:'#ff6600',det:260,atr:74, adm:22,acd:1.5, melee:true,  flying:false,hes:0.45},
+  shotgunner:{w:28,h:38,hp:55, spd:72,  pts:100, col:'#2266ff',det:390,atr:390,adm:11,acd:2.4, melee:false, flying:false,hes:0.55},
+  grenadier: {w:30,h:44,hp:75, spd:58,  pts:130, col:'#ffcc00',det:440,atr:440,adm:22,acd:4.2, melee:false, flying:false,hes:0.90},
+  flyer:     {w:40,h:28,hp:45, spd:142,pts:130, col:'#aa33ff',det:380,atr:66, adm:18,acd:1.8, melee:false, flying:true, hes:0.28},
 };
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
@@ -44,6 +48,7 @@ interface Player extends Entity {
 interface Enemy extends Entity {
   id:number; type:string; stunned:number; shootCd:number;
   pts:number; dir:number; atkTimer:number; dead:boolean; grounded:boolean;
+  hesTimer:number; chargeTimer:number;
 }
 
 interface Boss extends Entity {
@@ -83,6 +88,7 @@ interface GS {
   nextParticleId: number;
   spawnTimer: number;
   worldRight: number;
+  grenadeCharge: number;
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -122,7 +128,7 @@ function spawnParticles(gs:GS,x:number,y:number,count:number,r:number,g:number,b
 
 function explodeGrenade(gs:GS,x:number,y:number,fromPlayer:boolean) {
   spawnParticles(gs,x,y,18,255,160,30,350);
-  const radius=110;
+  const radius=200;
   const checkHit=(e:Entity & {hp:number;maxHp:number})=>{
     const cx=e.x+e.w/2, cy=e.y+e.h/2;
     const dist=Math.hypot(cx-x,cy-y);
@@ -169,18 +175,38 @@ function cleanupPlatforms(gs:GS) {
 
 function spawnEnemyWave(gs:GS) {
   if(gs.bossSpawned) return;
-  const types:Array<string>=['grunt','grunt','shotgunner','grunt','knight','shotgunner','grunt','knight'];
-  const type=types[Math.floor(Math.random()*types.length)];
+  // Weighted pool: more grunts early, mix later
+  const pool=['grunt','grunt','grunt','knight','shotgunner','grenadier','grunt','knight','flyer','shotgunner','grunt','grenadier'];
+  const type=pool[Math.floor(Math.random()*pool.length)];
   const cfg=ECFG[type];
-  const spawnX=gs.player.x+GW*0.7+randBetween(0,300);
-  const plat=gs.platforms.find(p=>p.x<spawnX && p.x+p.w>spawnX-50);
-  const spawnY=plat?plat.y-cfg.h:GROUND_Y-cfg.h;
+
+  // Find platforms ahead of the player to spawn on
+  const lookAheadMin=gs.player.x+GW*0.55;
+  const lookAheadMax=gs.player.x+GW+320;
+  const ahead=gs.platforms.filter(pl=>
+    pl.y<GROUND_Y-10 &&   // not the main ground slab
+    pl.x+pl.w>lookAheadMin &&
+    pl.x<lookAheadMax &&
+    pl.w>cfg.w+8          // wide enough to stand on
+  );
+
+  let sx:number, sy:number;
+  if(ahead.length>0) {
+    const plat=ahead[Math.floor(Math.random()*ahead.length)];
+    sx=randBetween(plat.x+4, plat.x+plat.w-cfg.w-4);
+    sy=cfg.flying ? plat.y-180 : plat.y-cfg.h;
+  } else {
+    sx=randBetween(lookAheadMin, lookAheadMax);
+    sy=cfg.flying ? GROUND_Y-210 : GROUND_Y-cfg.h;
+  }
+
   gs.enemies.push({
-    id:gs.nextEnemyId++,type,
-    x:spawnX,y:spawnY,vx:0,vy:0,
-    w:cfg.w,h:cfg.h,hp:cfg.hp,maxHp:cfg.hp,
-    stunned:0,shootCd:randBetween(0,cfg.acd),
-    pts:cfg.pts,dir:1,atkTimer:0,dead:false,grounded:false,
+    id:gs.nextEnemyId++, type,
+    x:sx, y:sy, vx:0, vy:0,
+    w:cfg.w, h:cfg.h, hp:cfg.hp, maxHp:cfg.hp,
+    stunned:0, shootCd:randBetween(0.4,cfg.acd),
+    pts:cfg.pts, dir:1, atkTimer:0.6, dead:false, grounded:false,
+    hesTimer:0, chargeTimer:0,
   });
 }
 
@@ -231,6 +257,21 @@ function spawnEnemyBullet(gs:GS,x:number,y:number,dx:number,dy:number,dmg:number
   });
 }
 
+function spawnEnemyGrenade(gs:GS,x:number,y:number,tx:number,ty:number) {
+  const dx=tx-x, dy=ty-y;
+  const dist=Math.hypot(dx,dy)||1;
+  // Lob upward by reducing the angle toward horizontal
+  const flatAngle=Math.atan2(dy,dx);
+  const lobAngle=flatAngle-Math.min(0.6,80/dist); // more arc at short range
+  const spd=Math.min(230+dist*0.28, 360);
+  gs.bullets.push({
+    id:gs.nextBulletId++,
+    x,y,vx:Math.cos(lobAngle)*spd,vy:Math.sin(lobAngle)*spd,
+    w:8,h:8,hp:1,maxHp:1,fromPlayer:false,dmg:22,
+    btype:'grenade',fuse:3.0,bounced:0,
+  });
+}
+
 // ─── PHYSICS HELPERS ─────────────────────────────────────────────────────────
 function applyGravAndPlatforms(e:Entity & {grounded:boolean;vy:number;vx:number}, plats:Platform[], dt:number, onlyFromAbove=false) {
   e.vy+=GRAVITY*dt;
@@ -265,7 +306,7 @@ function initGame(): GS {
     camX:0, camY:0,
     phase:'playing',
     nextPlatId:10, nextEnemyId:0, nextBulletId:0, nextParticleId:0,
-    spawnTimer:3, worldRight:1200,
+    spawnTimer:3, worldRight:1200, grenadeCharge:0,
   };
 }
 
@@ -276,7 +317,7 @@ export default function GameCanvas() {
   const gsRef=useRef<GS>(initGame());
   const keysRef=useRef(new Set<string>());
   const prevKeysRef=useRef(new Set<string>());
-  const mouseRef=useRef({x:GW/2,y:GH/2,left:false,right:false,leftClick:false,rightClick:false});
+  const mouseRef=useRef({x:GW/2,y:GH/2,left:false,right:false,leftClick:false,rightClick:false,grenadeChargeDur:0});
   const [hud,setHud]=useState({score:0,hp:100,weapon:0,kills:0,bossHp:0,bossMaxHp:BOSS_HP,phase:'playing',bossSpawned:false});
   const [focused,setFocused]=useState(false);
   const rafRef=useRef(0);
@@ -370,15 +411,51 @@ export default function GameCanvas() {
         if(keys.has('Digit2')&&!prevKeysRef.current.has('Digit2')) p.weapon=1;
         if(keys.has('Digit3')&&!prevKeysRef.current.has('Digit3')) p.weapon=2;
 
-        // Shoot (left click)
+        // Shoot
         if(p.shootCd>0) p.shootCd-=dt;
-        if(mouse.leftClick && p.shootCd<=0) {
-          const worldMouseX=mouse.x+gs.camX;
-          const worldMouseY=mouse.y+gs.camY;
-          const cx=p.x+p.w/2, cy=p.y+p.h/2;
-          spawnBullet(gs,cx,cy,worldMouseX-cx,worldMouseY-cy,true,p.weapon);
-          p.shootCd=WEAPONS[p.weapon].cd;
-          spawnParticles(gs,cx,cy,2,255,255,100,150);
+        const worldMouseX=mouse.x+gs.camX;
+        const worldMouseY=mouse.y+gs.camY;
+        const pcx=p.x+p.w/2, pcy=p.y+p.h/2;
+
+        if(p.weapon===2) {
+          // ── GRENADE: hold LMB to charge throw power (max 1.5 s) ──
+          if(mouse.left && p.shootCd<=0) {
+            mouse.grenadeChargeDur=Math.min(mouse.grenadeChargeDur+dt, 1.5);
+          }
+          // Release → throw with charged power
+          if(!mouse.left && mouse.grenadeChargeDur>0.06 && p.shootCd<=0) {
+            const pct=mouse.grenadeChargeDur/1.5;              // 0..1
+            const throwSpd=180+pct*380;                        // 180–560 px/s
+            const maxRange=640;
+            const rdx=worldMouseX-pcx, rdy=worldMouseY-pcy;
+            const rlen=Math.hypot(rdx,rdy)||1;
+            // Clamp direction vector to max range
+            const cdist=Math.min(rlen,maxRange);
+            const nx2=rdx/rlen, ny2=rdy/rlen;
+            gs.bullets.push({
+              id:gs.nextBulletId++,
+              x:pcx-4, y:pcy-4,
+              vx:nx2*throwSpd*(cdist/rlen>0.01?Math.min(cdist/rlen,1):1),
+              vy:ny2*throwSpd,
+              w:8,h:8,hp:1,maxHp:1,fromPlayer:true,
+              dmg:WEAPONS[2].dmg, btype:'grenade',
+              fuse:WEAPONS[2].fuse, bounced:0,
+            });
+            p.shootCd=WEAPONS[2].cd;
+            spawnParticles(gs,pcx,pcy,3,100,255,50,130);
+            mouse.grenadeChargeDur=0;
+          }
+          // Reset if mouse released without enough charge
+          if(!mouse.left) mouse.grenadeChargeDur=0;
+          gs.grenadeCharge=mouse.grenadeChargeDur/1.5;
+        } else {
+          // ── PISTOL / SHOTGUN: instant fire on click ──
+          if(mouse.leftClick && p.shootCd<=0) {
+            spawnBullet(gs,pcx,pcy,worldMouseX-pcx,worldMouseY-pcy,true,p.weapon);
+            p.shootCd=WEAPONS[p.weapon].cd;
+            spawnParticles(gs,pcx,pcy,2,255,255,100,150);
+          }
+          gs.grenadeCharge=0;
         }
         mouse.leftClick=false;
 
@@ -449,59 +526,138 @@ export default function GameCanvas() {
             const dxp=px-ex, dyp=py-ey;
             const distP=Math.hypot(dxp,dyp);
 
-            if(e.type==='grunt') {
-              if(distP<cfg.det) {
-                e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
-                e.facingRight=(dxp>0);
-                if(distP<cfg.atr && e.atkTimer<=0) {
-                  if(p.parryActive){ e.stunned=1.2; spawnParticles(gs,ex,ey,8,100,200,255,200); }
-                  else if(p.inv<=0){ p.hp-=cfg.adm; p.inv=INV_DUR; spawnParticles(gs,px,py,6,255,80,80,150); }
-                  e.atkTimer=cfg.acd;
+            // ── HESITATION + PER-TYPE AI ─────────────────────────────────
+            const inDet=distP<cfg.det;
+            const inAtk=distP<cfg.atr;
+            (e as unknown as Record<string,unknown>).facingRight=(dxp>0);
+
+            if(e.type==='grunt' || e.type==='knight') {
+              // ── MELEE ── charge → wind-up → strike
+              if(inDet) {
+                if(inAtk) {
+                  e.vx*=0.72; // slow down during wind-up
+                  if(e.hesTimer<=0 && e.atkTimer<=0) e.hesTimer=cfg.hes;
+                  if(e.hesTimer>0) {
+                    e.hesTimer-=dt;
+                    if(e.hesTimer<=0) {
+                      e.hesTimer=0;
+                      if(p.parryActive){
+                        e.stunned=(e.type==='knight'?1.8:1.2);
+                        spawnParticles(gs,ex,ey,9,100,200,255,230);
+                      } else if(p.inv<=0){
+                        p.hp-=cfg.adm; p.inv=INV_DUR;
+                        spawnParticles(gs,px,py,7,255,80,80,170);
+                        if(p.hp<=0){ p.dead=true; gs.phase='dead'; }
+                      }
+                      e.atkTimer=cfg.acd;
+                    }
+                  }
+                } else {
+                  // Chase
+                  const mspd=e.type==='knight'?cfg.spd*1.12:cfg.spd;
+                  e.vx=dxp/Math.abs(dxp||1)*mspd;
+                  e.hesTimer=0;
                 }
               } else {
-                e.vx=e.dir*cfg.spd*0.5;
+                e.vx=e.dir*cfg.spd*0.45;
+                e.hesTimer=0;
               }
+
             } else if(e.type==='shotgunner') {
-              if(distP<cfg.det) {
-                if(distP>120) e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
-                else e.vx*=0.8;
-                e.facingRight=(dxp>0);
+              // ── RANGED GUN ── keep ideal distance, shoot after hesitation
+              if(inDet) {
+                const ideal=190;
+                if(distP>ideal+20) e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
+                else if(distP<ideal-25) e.vx=-dxp/Math.abs(dxp||1)*cfg.spd*0.55;
+                else e.vx*=0.82;
                 e.shootCd-=dt;
-                if(e.shootCd<=0 && distP<cfg.atr) {
-                  for(let i=0;i<3;i++) spawnEnemyBullet(gs,ex,ey,dxp,dyp,cfg.adm,0.2);
-                  e.shootCd=cfg.acd;
-                  spawnParticles(gs,ex,ey,4,255,180,50,120);
+                if(e.shootCd<=0 && inAtk) {
+                  if(e.hesTimer<=0) e.hesTimer=cfg.hes;
+                  if(e.hesTimer>0) {
+                    e.hesTimer-=dt;
+                    if(e.hesTimer<=0) {
+                      for(let i=0;i<3;i++) spawnEnemyBullet(gs,ex,ey+e.h*0.3,dxp,dyp,cfg.adm,0.18);
+                      e.shootCd=cfg.acd; e.hesTimer=0;
+                      spawnParticles(gs,ex,ey,5,60,120,255,150);
+                    }
+                  }
                 }
-              } else { e.vx=e.dir*cfg.spd*0.4; }
-            } else if(e.type==='knight') {
-              if(distP<cfg.det) {
-                e.vx=dxp/Math.abs(dxp||1)*cfg.spd*1.1;
-                e.facingRight=(dxp>0);
-                if(distP<cfg.atr && e.atkTimer<=0) {
-                  if(p.parryActive){ e.stunned=1.8; spawnParticles(gs,ex,ey,10,100,200,255,250); }
-                  else if(p.inv<=0){ p.hp-=cfg.adm; p.inv=INV_DUR; spawnParticles(gs,px,py,8,255,80,80,180); }
-                  e.atkTimer=cfg.acd;
+              } else { e.vx=e.dir*cfg.spd*0.35; }
+
+            } else if(e.type==='grenadier') {
+              // ── RANGED GRENADE ── keep far distance, lob grenade after long wind-up
+              if(inDet) {
+                const ideal=280;
+                if(distP>ideal+30) e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
+                else if(distP<ideal-35) e.vx=-dxp/Math.abs(dxp||1)*cfg.spd*0.6;
+                else e.vx*=0.78;
+                e.shootCd-=dt;
+                if(e.shootCd<=0 && inAtk) {
+                  if(e.hesTimer<=0) e.hesTimer=cfg.hes;
+                  if(e.hesTimer>0) {
+                    e.hesTimer-=dt;
+                    // Visible wind-up flicker
+                    if(Math.floor(e.hesTimer*10)%2===0)
+                      spawnParticles(gs,ex,ey-e.h*0.5,1,255,220,50,60);
+                    if(e.hesTimer<=0) {
+                      spawnEnemyGrenade(gs,ex,ey-e.h*0.35,px,py);
+                      e.shootCd=cfg.acd; e.hesTimer=0;
+                      spawnParticles(gs,ex,ey,5,255,200,50,130);
+                    }
+                  }
                 }
-              } else { e.vx=e.dir*cfg.spd*0.5; }
+              } else { e.vx=e.dir*cfg.spd*0.3; }
+
+            } else if(e.type==='flyer') {
+              // ── FLYING ── float above player, dive-strike after wind-up
+              if(inDet) {
+                e.vx=dxp/Math.abs(dxp||1)*cfg.spd;
+                const targetY=p.y-115;
+                e.vy+=(targetY-e.y)*2.8*dt - e.vy*0.06;
+                if(inAtk) {
+                  if(e.hesTimer<=0 && e.atkTimer<=0) e.hesTimer=cfg.hes;
+                  if(e.hesTimer>0) {
+                    e.hesTimer-=dt;
+                    e.vx*=0.6; // hover before dive
+                    if(e.hesTimer<=0) {
+                      e.vy=420; // dive!
+                      if(p.parryActive){ e.vy=-280; e.stunned=1.1; spawnParticles(gs,ex,ey,9,100,200,255,210); }
+                      else if(p.inv<=0){ p.hp-=cfg.adm; p.inv=INV_DUR; spawnParticles(gs,px,py,6,200,80,255,170); if(p.hp<=0){p.dead=true;gs.phase='dead';} }
+                      e.atkTimer=cfg.acd; e.hesTimer=0;
+                    }
+                  }
+                } else e.hesTimer=0;
+              } else {
+                e.vx*=0.9;
+                e.vy+=(GROUND_Y-230-e.y)*1.4*dt;
+              }
+              e.vy=Math.max(-230,Math.min(450,e.vy));
             }
 
+            if(e.hesTimer<0) e.hesTimer=0;
             if(e.atkTimer>0) e.atkTimer-=dt;
           }
 
-          // Physics for enemy
-          applyGravAndPlatforms(e,gs.platforms,dt,true);
-          // Patrol bounce
-          const anyGround=gs.platforms.some(pp=>e.grounded);
-          if(!e.grounded && e.type!=='grunt') {
-            // push back if off edge
+          // Physics — flying enemies skip gravity/platform resolution
+          if(ECFG[e.type]?.flying) {
+            e.x+=e.vx*dt; e.y+=e.vy*dt;
+            if(e.y<-120){ e.y=-120; e.vy=Math.max(0,e.vy); }
+            if(e.y+e.h>GROUND_Y+80){ e.y=GROUND_Y+80-e.h; e.vy=Math.min(0,e.vy); }
+          } else {
+            applyGravAndPlatforms(e,gs.platforms,dt,true);
           }
-          if(e.x<-500) e.dead=true;
+          // Despawn if way behind player
+          if(e.x<gs.player.x-GW*1.2) e.dead=true;
         }
 
-        // Remove dead enemies
+        // Remove dead enemies, grant HP on kill
         for(const e of gs.enemies) {
           if(e.dead || e.hp<=0) {
-            if(!e.dead){ gs.score+=e.pts; gs.kills++; spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,12,200,50,50,220); }
+            if(!e.dead){
+              gs.score+=e.pts; gs.kills++;
+              spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,14,200,50,50,230);
+              p.hp=Math.min(p.maxHp,p.hp+14); // health on kill
+            }
             e.dead=true;
           }
         }
@@ -978,15 +1134,15 @@ function drawStray(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:numb
   const moving=Math.abs(e.vx)>10;
   const ws=Math.sin(now*0.009+e.id*2.1);
   const isS=e.stunned>0;
-  const rc=isS?'#4466bb':'#773300';
-  const dk=isS?'#2244aa':'#551100';
-  const hc=isS?'#334499':'#440e00';
+  const rc=isS?'#4466bb':'#1144cc';
+  const dk=isS?'#2244aa':'#0a2288';
+  const hc=isS?'#334499':'#060e55';
 
   ctx.save();
   ctx.translate(sx,sy);
   if(e.vx<-5) ctx.scale(-1,1);
 
-  ctx.shadowColor=isS?'#88aaff':'#dd7700'; ctx.shadowBlur=7;
+  ctx.shadowColor=isS?'#88aaff':'#2266ff'; ctx.shadowBlur=7;
 
   // Shuffling feet
   ctx.fillStyle=dk;
@@ -1034,11 +1190,11 @@ function drawStray(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:numb
   ctx.fillRect(-13,-40,26,3);  // rim
 
   // Glowing eyes under hood
-  ctx.fillStyle=isS?'#88ccff':'#ff9900';
-  ctx.shadowColor=isS?'#88ccff':'#ff9900'; ctx.shadowBlur=12;
+  ctx.fillStyle=isS?'#88ccff':'#22ddff';
+  ctx.shadowColor=isS?'#88ccff':'#22ddff'; ctx.shadowBlur=12;
   ctx.beginPath(); ctx.arc(-4,-48,3.5,0,Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(5,-48,3.5,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle=isS?'#cceeff':'#ffcc44';
+  ctx.fillStyle=isS?'#cceeff':'#88eeff';
   ctx.beginPath(); ctx.arc(-4,-48,1.5,0,Math.PI*2); ctx.fill();
   ctx.beginPath(); ctx.arc(5,-48,1.5,0,Math.PI*2); ctx.fill();
 
@@ -1050,16 +1206,16 @@ function drawSchism(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:num
   const sx=e.x+e.w/2-camX, sy=e.y+e.h-camY;
   const ws=Math.sin(now*0.008+e.id*3.3);
   const isS=e.stunned>0;
-  const bc=isS?'#4488cc':'#5522aa';
-  const dk=isS?'#2255aa':'#331177';
-  const sc=isS?'#88ccff':'#cc66ff';
+  const bc=isS?'#4488cc':'#cc5500';
+  const dk=isS?'#2255aa':'#882200';
+  const sc=isS?'#88ccff':'#ffaa44';
   const uo=Math.sin(now*0.005+e.id)*2; // upper half offset
 
   ctx.save();
   ctx.translate(sx,sy);
   if(e.vx<-5) ctx.scale(-1,1);
 
-  ctx.shadowColor=isS?'#88aaff':'#8833dd'; ctx.shadowBlur=9;
+  ctx.shadowColor=isS?'#88aaff':'#cc5500'; ctx.shadowBlur=9;
 
   // Legs (bony)
   ctx.fillStyle=dk;
@@ -1118,6 +1274,160 @@ function drawSchism(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:num
   ctx.shadowColor=sc; ctx.shadowBlur=8;
   ctx.fillRect(-7,-63+uo,4,5);
   ctx.fillRect(3,-63+uo,4,5);
+
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// Grenadier – yellow robed figure, lobs grenades (RANGED/YELLOW)
+function drawGrenadier(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:number, now:number) {
+  const sx=e.x+e.w/2-camX, sy=e.y+e.h-camY;
+  const isS=e.stunned>0;
+  const moving=Math.abs(e.vx)>10;
+  const ws=Math.sin(now*0.009+e.id*2.7);
+  const windUp=e.hesTimer>0;
+  const rc=isS?'#4466bb':'#cc9900';
+  const dk=isS?'#2244aa':'#886600';
+  const hc=isS?'#334499':'#553300';
+
+  ctx.save();
+  ctx.translate(sx,sy);
+  if(e.vx<-5) ctx.scale(-1,1);
+
+  ctx.shadowColor=isS?'#88aaff':'#ffcc00'; ctx.shadowBlur=8;
+
+  // Feet
+  ctx.fillStyle=dk;
+  ctx.fillRect(-7,-8+(moving?ws*3:0),6,10);
+  ctx.fillRect(1,-8-(moving?ws*3:0),6,10);
+
+  // Robe (wider at bottom)
+  ctx.fillStyle=rc;
+  ctx.beginPath();
+  ctx.moveTo(-14,-40); ctx.lineTo(14,-40);
+  ctx.lineTo(19,-8); ctx.lineTo(-19,-8);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle=dk;
+  ctx.fillRect(-2,-38,4,30);
+  ctx.fillStyle=rc;
+  ctx.fillRect(-1,-38,2,30);
+
+  // Left arm tucked
+  ctx.fillStyle=dk;
+  ctx.fillRect(-19,-38,7,14);
+
+  // Right arm raised (wind-up = raised higher)
+  const armRaise=windUp?-12:0;
+  ctx.fillStyle=rc;
+  ctx.fillRect(12,-38+armRaise,8,14);
+  ctx.fillStyle=dk;
+  ctx.fillRect(18,-32+armRaise,8,14);
+
+  // Grenade in hand (round + pin)
+  const gc=windUp?'#ffff44':'#aaff22';
+  ctx.fillStyle=gc;
+  ctx.shadowColor=gc; ctx.shadowBlur=windUp?14:6;
+  ctx.beginPath(); ctx.arc(30,-32+armRaise,7,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle='#888';
+  ctx.fillRect(28,-42+armRaise,4,10); // pin / stem
+  ctx.fillStyle='#ccc';
+  ctx.fillRect(26,-39+armRaise,8,3);  // safety lever
+
+  // Pointed hood (wider brim)
+  ctx.shadowBlur=8; ctx.fillStyle=hc;
+  ctx.beginPath();
+  ctx.moveTo(-15,-40); ctx.lineTo(0,-65); ctx.lineTo(15,-40);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#0a0a0a';
+  ctx.fillRect(-12,-52,24,13);
+  ctx.fillStyle=rc;
+  ctx.fillRect(-15,-40,30,3);
+
+  // Eyes (amber/gold)
+  ctx.fillStyle=isS?'#88ccff':'#ffcc00';
+  ctx.shadowColor=ctx.fillStyle; ctx.shadowBlur=10;
+  ctx.beginPath(); ctx.arc(-4,-48,3,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(5,-48,3,0,Math.PI*2); ctx.fill();
+
+  ctx.shadowBlur=0; ctx.restore();
+}
+
+// Flyer – purple bat-winged enemy that hovers and dives (FLYING/PURPLE)
+function drawFlyer(ctx:CanvasRenderingContext2D, e:Enemy, camX:number, camY:number, now:number) {
+  const sx=e.x+e.w/2-camX, sy=e.y+e.h/2-camY; // center-based (no ground ref)
+  const isS=e.stunned>0;
+  const flap=Math.sin(now*0.013+e.id*1.9);
+  const dive=e.vy>150; // diving down
+  const bc=isS?'#4488cc':'#8822cc';
+  const dk=isS?'#2255aa':'#551188';
+  const ec=isS?'#88ccff':'#dd44ff';
+
+  ctx.save();
+  ctx.translate(sx,sy);
+  if(e.vx<-5) ctx.scale(-1,1);
+
+  // ── Wings (bat-membrane) ──
+  ctx.fillStyle=isS?'#3366aa':'#6611aa';
+  ctx.shadowColor=isS?'#88aaff':'#aa33ff'; ctx.shadowBlur=10;
+  const wingDrop=dive?6:flap*10;
+  // Left wing
+  ctx.beginPath();
+  ctx.moveTo(-6,-2);
+  ctx.quadraticCurveTo(-42,-22+wingDrop,-36,-4+wingDrop*0.4);
+  ctx.quadraticCurveTo(-22,8,-6,6);
+  ctx.closePath(); ctx.fill();
+  // Right wing
+  ctx.beginPath();
+  ctx.moveTo(6,-2);
+  ctx.quadraticCurveTo(42,-22+wingDrop,36,-4+wingDrop*0.4);
+  ctx.quadraticCurveTo(22,8,6,6);
+  ctx.closePath(); ctx.fill();
+
+  // Wing membrane veins
+  ctx.strokeStyle=dk; ctx.lineWidth=1.5; ctx.globalAlpha=0.5;
+  ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(-36,-4+wingDrop*0.4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-6,0); ctx.lineTo(-28,5+wingDrop*0.3); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(36,-4+wingDrop*0.4); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(6,0); ctx.lineTo(28,5+wingDrop*0.3); ctx.stroke();
+  ctx.globalAlpha=1;
+
+  // ── Body ──
+  ctx.shadowBlur=10;
+  ctx.fillStyle=bc;
+  ctx.fillRect(-11,-14,22,20);
+  // Chest detail
+  ctx.fillStyle=dk;
+  ctx.fillRect(-8,-12,16,4);
+  ctx.fillRect(-8,-6,16,4);
+
+  // ── Head ──
+  ctx.fillStyle=bc;
+  ctx.fillRect(-9,-26,18,14);
+  // Horns/ears
+  ctx.fillStyle=dk;
+  ctx.fillRect(-11,-33,4,9);
+  ctx.fillRect(7,-33,4,9);
+  ctx.fillStyle=bc;
+  ctx.fillRect(-9,-31,3,6);
+  ctx.fillRect(6,-31,3,6);
+
+  // ── Glowing eyes ──
+  ctx.fillStyle=ec;
+  ctx.shadowColor=ec; ctx.shadowBlur=12;
+  ctx.beginPath(); ctx.arc(-3,-20,3.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(3,-20,3.5,0,Math.PI*2); ctx.fill();
+  ctx.fillStyle=isS?'#cceeff':'#ffffff';
+  ctx.beginPath(); ctx.arc(-3,-20,1.5,0,Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(3,-20,1.5,0,Math.PI*2); ctx.fill();
+
+  // Claws when diving
+  if(dive) {
+    ctx.shadowBlur=0;
+    ctx.fillStyle=bc;
+    ctx.fillRect(-8,6,5,12); ctx.fillRect(3,6,5,12);
+    ctx.fillStyle=dk;
+    ctx.fillRect(-9,16,3,6); ctx.fillRect(-6,17,3,5);
+    ctx.fillRect(2,16,3,6); ctx.fillRect(5,17,3,5);
+  }
 
   ctx.shadowBlur=0; ctx.restore();
 }
@@ -1301,9 +1611,11 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
   // ── Enemies (ULTRAKILL-styled sprites) ──
   for(const e of gs.enemies) {
     if(e.dead) continue;
-    if(e.type==='grunt')      drawFilth(ctx,e,camX,camY,now);
-    else if(e.type==='shotgunner') drawStray(ctx,e,camX,camY,now);
+    if(e.type==='grunt')           drawFilth(ctx,e,camX,camY,now);
     else if(e.type==='knight')     drawSchism(ctx,e,camX,camY,now);
+    else if(e.type==='shotgunner') drawStray(ctx,e,camX,camY,now);
+    else if(e.type==='grenadier')  drawGrenadier(ctx,e,camX,camY,now);
+    else if(e.type==='flyer')      drawFlyer(ctx,e,camX,camY,now);
     // HP bar above entity
     if(e.hp<e.maxHp) {
       const hx=wx(e.x), hy=wy(e.y)-10;
@@ -1351,6 +1663,25 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
       ctx.fillStyle=col; ctx.shadowColor=col; ctx.shadowBlur=9;
       ctx.beginPath(); ctx.arc(bsx,bsy,5,0,Math.PI*2); ctx.fill();
     }
+    ctx.shadowBlur=0;
+  }
+
+  // ── Grenade charge indicator ──
+  if(gs.grenadeCharge>0 && !gs.player.dead) {
+    const px=gs.player.x+gs.player.w/2-camX;
+    const py=gs.player.y+gs.player.h/2-camY;
+    const pct=gs.grenadeCharge;
+    ctx.strokeStyle=`rgba(100,255,50,${0.45+pct*0.55})`;
+    ctx.lineWidth=3;
+    ctx.shadowColor='#66ff22'; ctx.shadowBlur=10;
+    ctx.beginPath();
+    ctx.arc(px,py,30,-Math.PI/2,-Math.PI/2+Math.PI*2*pct);
+    ctx.stroke();
+    ctx.fillStyle=`rgba(200,255,100,${pct*0.9})`;
+    ctx.font=`bold ${10+Math.round(pct*5)}px monospace`;
+    ctx.textAlign='center';
+    ctx.fillText(`${Math.round(pct*100)}%`,px,py-40);
+    ctx.textAlign='left';
     ctx.shadowBlur=0;
   }
 
