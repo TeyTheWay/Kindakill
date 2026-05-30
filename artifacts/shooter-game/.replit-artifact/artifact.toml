@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "2D Side-Scroller Shooter"
+version = "1.0.0"
+id = "artifacts/shooter-game"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22152
+
+[services.development]
+run = "pnpm --filter @workspace/shooter-game run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/shooter-game", "run", "build" ]
+publicDir = "artifacts/shooter-game/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22152"
+BASE_PATH = "/"
