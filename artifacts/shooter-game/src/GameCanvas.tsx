@@ -14,14 +14,16 @@ const GRAPPLE_FORCE = 3000;
 const GRAPPLE_RANGE = 480;
 const INV_DUR = 0.5;
 const BOSS_SPAWN_KILLS = 20;
-const BOSS_HP = 1500;
+const BOSS_HP = 750;
 
 const WEAPONS = [
-  { name: 'PISTOL',   cd: 0.22, dmg: 10, spd: 750, pellets: 1, spread: 0,    fuse: 0 },
+  { name: 'PISTOL',   cd: 0.22, dmg: 25, spd: 750, pellets: 1, spread: 0,    fuse: 0 },
   { name: 'SHOTGUN',  cd: 0.70, dmg: 16, spd: 580, pellets: 6, spread: 0.28, fuse: 0 },
   { name: 'GRENADE',  cd: 0.85, dmg: 55, spd: 380, pellets: 1, spread: 0,    fuse: 2.8 },
+  { name: 'MISSILE',  cd: 1.20, dmg:100, spd: 520, pellets: 1, spread: 0,    fuse: 0 },
 ];
-const GRENADE_RADIUS = 384; // 6 tiles × 64px
+const GRENADE_RADIUS = 384;
+const MISSILE_RADIUS = 640;
 const GRENADE_MAX_RANGE = 1200;
 
 // col = base colour (unused in sprite draw, but used for HP bars / debug)
@@ -74,6 +76,8 @@ interface Particle {
   life:number;maxLife:number;r:number;g:number;b:number;sz:number;
 }
 
+interface Blast { x:number; y:number; r:number; mr:number; t:number; }
+
 interface GS {
   player: Player;
   enemies: Enemy[];
@@ -81,6 +85,7 @@ interface GS {
   bullets: Bullet[];
   platforms: Platform[];
   particles: Particle[];
+  blasts: Blast[];
   score: number;
   kills: number;
   bossSpawned: boolean;
@@ -132,8 +137,18 @@ function spawnParticles(gs:GS,x:number,y:number,count:number,r:number,g:number,b
 }
 
 function explodeGrenade(gs:GS,x:number,y:number,fromPlayer:boolean) {
-  spawnParticles(gs,x,y,32,255,160,30,450);
-  spawnParticles(gs,x,y,16,255,220,80,280);
+  if(!gs.blasts) gs.blasts=[];
+  gs.blasts.push({x,y,r:0,mr:GRENADE_RADIUS,t:1});
+  spawnParticles(gs,x,y,55,255,160,30,520);
+  spawnParticles(gs,x,y,28,255,220,80,320);
+  spawnParticles(gs,x,y,18,220,120,20,200);
+  // Ring of fire at explosion edge
+  for(let i=0;i<18;i++){
+    const a=i/18*Math.PI*2;
+    const er=GRENADE_RADIUS*0.45;
+    gs.particles.push({id:gs.nextParticleId++,x:x+Math.cos(a)*er,y:y+Math.sin(a)*er,
+      vx:Math.cos(a)*240,vy:Math.sin(a)*240,life:0.55,maxLife:0.55,r:255,g:130,b:20,sz:7});
+  }
   const radius=GRENADE_RADIUS;
   const checkHit=(e:Entity & {hp:number;maxHp:number})=>{
     const cx=e.x+e.w/2, cy=e.y+e.h/2;
@@ -245,7 +260,7 @@ function spawnBullet(gs:GS,x:number,y:number,dx:number,dy:number,fromPlayer:bool
       id:gs.nextBulletId++,
       x:x-3,y:y-3,vx:bvx,vy:bvy,w:6,h:6,
       hp:1,maxHp:1,fromPlayer,dmg:w.dmg,
-      btype:weaponIdx===0?'pistol':weaponIdx===1?'shotgun':'grenade',
+      btype:weaponIdx===0?'pistol':weaponIdx===1?'shotgun':weaponIdx===2?'grenade':'missile',
       fuse:w.fuse,bounced:0,shooterId,
     });
   }
@@ -296,7 +311,43 @@ function applyGravAndPlatforms(e:Entity & {grounded:boolean;vy:number;vx:number}
   e.grounded=false;
   for(const p of plats) resolveVsPlat(e,p,onlyFromAbove);
   // Ground
-  if(e.y+e.h>GROUND_Y+80) { e.y=GROUND_Y+80-e.h; e.vy=0; e.grounded=true; }
+  if(e.y+e.h>GROUND_Y) { e.y=GROUND_Y-e.h; e.vy=0; e.grounded=true; }
+}
+
+function explodeMissile(gs:GS,x:number,y:number,fromPlayer:boolean) {
+  if(!gs.blasts) gs.blasts=[];
+  gs.blasts.push({x,y,r:0,mr:MISSILE_RADIUS,t:1});
+  spawnParticles(gs,x,y,55,255,140,20,750);
+  spawnParticles(gs,x,y,28,255,220,60,420);
+  spawnParticles(gs,x,y,18,255,255,200,260);
+  const radius=MISSILE_RADIUS;
+  const checkHit=(e:Entity & {hp:number;maxHp:number})=>{
+    const cx=e.x+e.w/2, cy=e.y+e.h/2;
+    const dist=Math.hypot(cx-x,cy-y);
+    if(dist<radius){ const dmg=Math.round(100*(1-dist/radius)+20); e.hp-=dmg; }
+  };
+  if(fromPlayer){
+    gs.enemies.forEach(e=>{ if(!e.dead) checkHit(e); });
+    if(gs.boss&&!gs.boss.dead) checkHit(gs.boss);
+  } else {
+    if(!gs.player.dead) checkHit(gs.player);
+  }
+}
+
+function autoAim(gs:GS,fromX:number,fromY:number,dx:number,dy:number,range:number):{dx:number,dy:number} {
+  const aimAngle=Math.atan2(dy,dx);
+  let bestScore=0.55, bestDx=dx, bestDy=dy;
+  const check=(tx:number,ty:number)=>{
+    const tdx=tx-fromX, tdy=ty-fromY;
+    const dist=Math.hypot(tdx,tdy);
+    if(dist>range||dist<10) return;
+    const diff=Math.abs(((Math.atan2(tdy,tdx)-aimAngle)+Math.PI*3)%(Math.PI*2)-Math.PI);
+    const score=1-diff/Math.PI;
+    if(score>bestScore){ bestScore=score; bestDx=tdx; bestDy=tdy; }
+  };
+  for(const e of gs.enemies){ if(!e.dead) check(e.x+e.w/2,e.y+e.h/2); }
+  if(gs.boss&&!gs.boss.dead) check(gs.boss.x+gs.boss.w/2,gs.boss.y+gs.boss.h/2);
+  return {dx:bestDx,dy:bestDy};
 }
 
 // ─── GAME INIT ───────────────────────────────────────────────────────────────
@@ -317,7 +368,7 @@ function initGame(): GS {
     sliding:false,slideCd:0,slideTimer:0,
   };
   return {
-    player, enemies:[], boss:null, bullets:[], platforms:plats, particles:[],
+    player, enemies:[], boss:null, bullets:[], platforms:plats, particles:[], blasts:[],
     score:0, kills:0, bossSpawned:false,
     camX:0, camY:0,
     phase:'playing',
@@ -444,6 +495,7 @@ export default function GameCanvas() {
         if(keys.has('Digit1')&&!prevKeysRef.current.has('Digit1')) p.weapon=0;
         if(keys.has('Digit2')&&!prevKeysRef.current.has('Digit2')) p.weapon=1;
         if(keys.has('Digit3')&&!prevKeysRef.current.has('Digit3')) p.weapon=2;
+        if(keys.has('Digit4')&&!prevKeysRef.current.has('Digit4')) p.weapon=3;
 
         // Shoot
         if(p.shootCd>0) p.shootCd-=dt;
@@ -453,38 +505,55 @@ export default function GameCanvas() {
         const pcx=p.x+p.w/2, pcy=p.y+p.h/2;
 
         if(p.weapon===2) {
-          // ── GRENADE: hold LMB to charge throw power (max 1.5 s) ──
+          // ── GRENADE: hold LMB to charge, release to throw ──
           if(mouse.left && p.shootCd<=0) {
             mouse.grenadeChargeDur=Math.min(mouse.grenadeChargeDur+dt, 1.5);
           }
-          // Release → throw with charged power
           if(!mouse.left && mouse.grenadeChargeDur>0.06 && p.shootCd<=0) {
-            const pct=mouse.grenadeChargeDur/1.5;              // 0..1
-            const throwSpd=220+pct*480;                        // 220–700 px/s
+            const pct=mouse.grenadeChargeDur/1.5;
+            const throwSpd=220+pct*480;
             const rdx=worldMouseX-pcx, rdy=worldMouseY-pcy;
             const rlen=Math.hypot(rdx,rdy)||1;
             const cdist=Math.min(rlen,GRENADE_MAX_RANGE);
             const nx2=rdx/rlen, ny2=rdy/rlen;
+            const {dx:gaDx,dy:gaDy}=autoAim(gs,pcx,pcy,rdx,rdy,700);
+            const gaLen=Math.hypot(gaDx,gaDy)||1;
+            const mixNx=nx2*0.65+gaDx/gaLen*0.35, mixNy=ny2*0.65+gaDy/gaLen*0.35;
+            const mixLen=Math.hypot(mixNx,mixNy)||1;
             gs.bullets.push({
-              id:gs.nextBulletId++,
-              x:pcx-4, y:pcy-4,
-              vx:nx2*throwSpd*(cdist/rlen>0.01?Math.min(cdist/rlen,1):1),
-              vy:ny2*throwSpd,
+              id:gs.nextBulletId++, x:pcx-4, y:pcy-4,
+              vx:mixNx/mixLen*throwSpd*(cdist/rlen>0.01?Math.min(cdist/rlen,1):1),
+              vy:mixNy/mixLen*throwSpd,
               w:8,h:8,hp:1,maxHp:1,fromPlayer:true,
-              dmg:WEAPONS[2].dmg, btype:'grenade',
-              fuse:WEAPONS[2].fuse, bounced:0, shooterId:-2,
+              dmg:WEAPONS[2].dmg, btype:'grenade', fuse:WEAPONS[2].fuse, bounced:0, shooterId:-2,
             });
             p.shootCd=WEAPONS[2].cd;
             spawnParticles(gs,pcx,pcy,3,100,255,50,130);
             mouse.grenadeChargeDur=0;
           }
-          // Reset if mouse released without enough charge
           if(!mouse.left) mouse.grenadeChargeDur=0;
           gs.grenadeCharge=mouse.grenadeChargeDur/1.5;
-        } else {
-          // ── PISTOL / SHOTGUN: instant fire on click ──
+        } else if(p.weapon===3) {
+          // ── MISSILE: one-shot, auto-homes to nearest enemy ──
           if(mouse.leftClick && p.shootCd<=0) {
-            spawnBullet(gs,pcx,pcy,worldMouseX-pcx,worldMouseY-pcy,true,p.weapon);
+            const {dx:mDx,dy:mDy}=autoAim(gs,pcx,pcy,worldMouseX-pcx,worldMouseY-pcy,1800);
+            const mLen=Math.hypot(mDx,mDy)||1;
+            gs.bullets.push({
+              id:gs.nextBulletId++, x:pcx-5, y:pcy-5,
+              vx:mDx/mLen*WEAPONS[3].spd, vy:mDy/mLen*WEAPONS[3].spd,
+              w:10,h:10,hp:1,maxHp:1,fromPlayer:true,
+              dmg:WEAPONS[3].dmg, btype:'missile', fuse:0, bounced:0, shooterId:-2,
+            });
+            p.shootCd=WEAPONS[3].cd;
+            spawnParticles(gs,pcx,pcy,5,255,140,20,280);
+          }
+          gs.grenadeCharge=0;
+        } else {
+          // ── PISTOL / SHOTGUN: instant fire, pistol has soft auto-aim ──
+          if(mouse.leftClick && p.shootCd<=0) {
+            let sDx=worldMouseX-pcx, sDy=worldMouseY-pcy;
+            if(p.weapon===0){ const {dx,dy}=autoAim(gs,pcx,pcy,sDx,sDy,600); sDx=dx; sDy=dy; }
+            spawnBullet(gs,pcx,pcy,sDx,sDy,true,p.weapon);
             p.shootCd=WEAPONS[p.weapon].cd;
             spawnParticles(gs,pcx,pcy,2,255,255,100,150);
           }
@@ -544,10 +613,21 @@ export default function GameCanvas() {
           if(p.grappleTargetId>=0) {
             const te=gs.enemies.find(e=>!e.dead&&e.id===p.grappleTargetId);
             if(te) { p.grappleX=te.x+te.w/2; p.grappleY=te.y+te.h/2; }
-            else { p.grappleOn=false; } // target died — detach
+            else { p.grappleOn=false; }
           } else if(p.grappleTargetId===-1) {
             if(gs.boss && !gs.boss.dead) { p.grappleX=gs.boss.x+gs.boss.w/2; p.grappleY=gs.boss.y+gs.boss.h/2; }
             else { p.grappleOn=false; }
+          }
+        }
+
+        // Pull grappled enemy toward player
+        if(p.grappleOn && p.grapple && p.grappleTargetId>=0) {
+          const pullEnemy=gs.enemies.find(e=>!e.dead&&e.id===p.grappleTargetId);
+          if(pullEnemy) {
+            const ptcx=p.x+p.w/2, ptcy=p.y+p.h/2;
+            const edx=ptcx-(pullEnemy.x+pullEnemy.w/2), edy=ptcy-(pullEnemy.y+pullEnemy.h/2);
+            const edist=Math.hypot(edx,edy)||1;
+            if(edist>25){ pullEnemy.vx+=edx/edist*2600*dt; pullEnemy.vy+=edy/edist*2600*dt; }
           }
         }
 
@@ -584,7 +664,7 @@ export default function GameCanvas() {
         p.x+=p.vx*dt; p.y+=p.vy*dt;
         p.grounded=false;
         for(const plat of gs.platforms) resolveVsPlat(p,plat);
-        if(p.y+p.h>GROUND_Y+80){ p.y=GROUND_Y+80-p.h; p.vy=0; p.grounded=true; }
+        if(p.y+p.h>GROUND_Y){ p.y=GROUND_Y-p.h; p.vy=0; p.grounded=true; }
         if(p.grounded) p.jumps=2;
 
         // Invincibility countdown
@@ -820,9 +900,9 @@ export default function GameCanvas() {
         // Spawn new enemies
         gs.spawnTimer-=dt;
         if(gs.spawnTimer<=0 && !gs.bossSpawned) {
-          const maxEnemies=gs.kills<10?3:5;
-          if(gs.enemies.length<maxEnemies) spawnEnemyWave(gs);
-          gs.spawnTimer=randBetween(3,6);
+          const maxEnemies=gs.kills<10?6:10;
+          if(gs.enemies.length<maxEnemies){ spawnEnemyWave(gs); spawnEnemyWave(gs); }
+          gs.spawnTimer=randBetween(1.5,3);
         }
 
         // Boss spawn
@@ -891,19 +971,21 @@ export default function GameCanvas() {
         boss.x+=boss.vx*dt; boss.y+=boss.vy*dt;
         boss.grounded=false;
         for(const plat of gs.platforms) resolveVsPlat(boss,plat);
-        if(boss.y+boss.h>GROUND_Y+80){ boss.y=GROUND_Y+80-boss.h; boss.vy=0; boss.grounded=true; }
+        if(boss.y+boss.h>GROUND_Y){ boss.y=GROUND_Y-boss.h; boss.vy=0; boss.grounded=true; }
 
         // Boss melee
         if(aabb(boss.x,boss.y,boss.w,boss.h,p.x,p.y,p.w,p.h)) {
           if(p.parryActive){ boss.vy=DJUMP_FORCE; boss.vx*=-2; spawnParticles(gs,bx,by,10,100,200,255,250); }
-          else if(p.inv<=0){ p.hp-=20; p.inv=INV_DUR; spawnParticles(gs,px,py2,8,255,80,80,180); }
+          else if(p.inv<=0){ p.hp-=12; p.inv=INV_DUR; spawnParticles(gs,px,py2,8,255,80,80,180); }
         }
 
         if(boss.hp<=0) {
           boss.dead=true;
           gs.score+=1000;
-          gs.phase='win';
-          spawnParticles(gs,bx,by,30,255,215,0,350);
+          gs.bossSpawned=false;
+          gs.spawnTimer=4;
+          explodeMissile(gs,bx,by,true);
+          spawnParticles(gs,bx,by,40,255,215,0,420);
         }
       }
 
@@ -919,6 +1001,25 @@ export default function GameCanvas() {
             explodeGrenade(gs,b.x+b.w/2,b.y+b.h/2,b.fromPlayer);
             b.hp=0; continue;
           }
+        }
+
+        // Missile homing toward nearest enemy/boss
+        if(b.btype==='missile') {
+          let nearDx=b.vx, nearDy=b.vy, nearDist=Infinity;
+          for(const e of gs.enemies){
+            if(e.dead) continue;
+            const dx=e.x+e.w/2-(b.x+b.w/2), dy=e.y+e.h/2-(b.y+b.h/2);
+            const d=Math.hypot(dx,dy);
+            if(d<nearDist){ nearDist=d; nearDx=dx; nearDy=dy; }
+          }
+          if(gs.boss&&!gs.boss.dead){
+            const dx=gs.boss.x+gs.boss.w/2-(b.x+b.w/2), dy=gs.boss.y+gs.boss.h/2-(b.y+b.h/2);
+            if(Math.hypot(dx,dy)<nearDist){ nearDx=dx; nearDy=dy; }
+          }
+          const nlen=Math.hypot(nearDx,nearDy)||1;
+          b.vx+=nearDx/nlen*1800*dt; b.vy+=nearDy/nlen*1800*dt;
+          const mspd=Math.hypot(b.vx,b.vy);
+          if(mspd>WEAPONS[3].spd*1.5){ b.vx=b.vx/mspd*WEAPONS[3].spd*1.5; b.vy=b.vy/mspd*WEAPONS[3].spd*1.5; }
         }
 
         b.x+=b.vx*dt; b.y+=b.vy*dt;
@@ -1008,6 +1109,7 @@ export default function GameCanvas() {
           for(const e of gs.enemies) {
             if(e.dead) continue;
             if(aabb(b.x,b.y,b.w,b.h,e.x,e.y,e.w,e.h)) {
+              if(b.btype==='missile'){ explodeMissile(gs,b.x+b.w/2,b.y+b.h/2,true); b.hp=0; hitSomething=true; break; }
               e.hp-=b.dmg;
               spawnParticles(gs,b.x,b.y,4,200,50,50,150);
               b.hp=0; hitSomething=true;
@@ -1021,7 +1123,9 @@ export default function GameCanvas() {
                 b.vx*=-1.2; b.vy*=-1.2; b.fromPlayer=false;
                 spawnParticles(gs,b.x,b.y,8,255,100,50,200);
               } else {
-                boss.hp-=b.dmg;
+                if(b.btype==='missile'){ explodeMissile(gs,b.x+b.w/2,b.y+b.h/2,true); }
+                else { boss.hp-=b.dmg; }
+                p.hp=Math.min(p.maxHp,p.hp+10);
                 spawnParticles(gs,b.x,b.y,5,150,50,200,150);
                 b.hp=0;
               }
@@ -1039,6 +1143,10 @@ export default function GameCanvas() {
         part.vx*=0.95;
       }
       gs.particles=gs.particles.filter(p=>p.life>0);
+      // Update blast rings (guard for HMR state compat)
+      if(!gs.blasts) gs.blasts=[];
+      for(const bl of gs.blasts){ bl.r+=bl.mr*2.8*dt; bl.t-=dt*2.6; }
+      gs.blasts=gs.blasts.filter(bl=>bl.t>0);
 
       // ── WORLD GEN ─────────────────────────────────────────────────────
       generatePlatforms(gs);
@@ -1931,112 +2039,132 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
   const camX=gs.camX, camY=gs.camY;
   const W=ctx.canvas.width, H=ctx.canvas.height;
 
-  // ── ULTRAKILL-style Background ──
-  // Deep crimson-black sky
+  // ── HELL Background ──
   const bgGrad=ctx.createLinearGradient(0,0,0,H);
-  bgGrad.addColorStop(0,'#0a0000');
-  bgGrad.addColorStop(0.5,'#1a0303');
-  bgGrad.addColorStop(1,'#2a0505');
-  ctx.fillStyle=bgGrad;
-  ctx.fillRect(0,0,W,H);
+  bgGrad.addColorStop(0,'#050000'); bgGrad.addColorStop(0.4,'#130000');
+  bgGrad.addColorStop(0.75,'#200500'); bgGrad.addColorStop(1,'#2e0800');
+  ctx.fillStyle=bgGrad; ctx.fillRect(0,0,W,H);
 
-  // Far parallax: gothic arch silhouettes
+  // Far: jagged mountain silhouettes
   ctx.save();
-  ctx.globalAlpha=0.18;
-  const archOffX=(camX*0.08)%320;
-  for(let a=-1;a<Math.ceil(W/320)+1;a++) {
-    const ax=a*320-archOffX;
-    const archW=80, archH=180;
-    ctx.fillStyle='#1c0404';
-    // Column left
-    ctx.fillRect(ax+20,H-archH,18,archH);
-    // Column right
-    ctx.fillRect(ax+archW-6,H-archH,18,archH);
-    // Pointed arch top (triangle)
+  const mtnOff=(camX*0.06)%(W+160);
+  ctx.globalAlpha=0.22; ctx.fillStyle='#0d0000';
+  ctx.beginPath(); ctx.moveTo(-mtnOff,H);
+  for(let mx=0;mx<W*2+240;mx+=80){
+    const ph=90+Math.sin(mx*0.031+7)*45+Math.sin(mx*0.078)*22;
+    ctx.lineTo(mx-mtnOff,H-ph);
+    ctx.lineTo(mx+40-mtnOff,H-ph-28-Math.abs(Math.sin(mx*0.05))*18);
+    ctx.lineTo(mx+80-mtnOff,H-ph+8);
+  }
+  ctx.lineTo(W*2,H); ctx.closePath(); ctx.fill();
+  ctx.restore();
+
+  // Mid: rock spires with orange base glow
+  ctx.save();
+  const spireOff=(camX*0.18)%220;
+  for(let s=-1;s<Math.ceil(W/220)+2;s++){
+    const sx=s*220-spireOff, sh=65+(s%4)*20;
+    ctx.globalAlpha=0.38; ctx.fillStyle='#120100';
     ctx.beginPath();
-    ctx.moveTo(ax+20,H-archH);
-    ctx.lineTo(ax+archW+12,H-archH);
-    ctx.lineTo(ax+archW/2+12,H-archH-50);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(sx+10,H); ctx.lineTo(sx+26,H-sh); ctx.lineTo(sx+38,H-sh+8);
+    ctx.lineTo(sx+50,H-sh-12); ctx.lineTo(sx+62,H-sh+5); ctx.lineTo(sx+75,H);
+    ctx.closePath(); ctx.fill();
+    const sg=ctx.createLinearGradient(0,H-sh,0,H);
+    sg.addColorStop(0,'rgba(255,60,0,0)'); sg.addColorStop(1,'rgba(255,80,0,0.2)');
+    ctx.fillStyle=sg; ctx.globalAlpha=0.5; ctx.fillRect(sx,H-sh,75,sh);
   }
   ctx.restore();
 
-  // Mid parallax: dark stone column silhouettes
-  ctx.save();
-  ctx.globalAlpha=0.28;
-  const colOffX=(camX*0.22)%200;
-  for(let c=-1;c<Math.ceil(W/200)+2;c++) {
-    const cx2=c*200-colOffX;
-    const colH=80+(c%3)*30;
-    ctx.fillStyle='#150202';
-    ctx.fillRect(cx2+30,H-colH,24,colH);
-    // Capital top
-    ctx.fillRect(cx2+22,H-colH-8,40,8);
-  }
-  ctx.restore();
+  // Lava fog at bottom
+  const fogGrad=ctx.createLinearGradient(0,H-120,0,H);
+  fogGrad.addColorStop(0,'rgba(180,30,0,0)'); fogGrad.addColorStop(0.5,'rgba(220,60,0,0.18)');
+  fogGrad.addColorStop(1,'rgba(255,100,10,0.35)');
+  ctx.fillStyle=fogGrad; ctx.fillRect(0,H-120,W,120);
 
-  // Fog layer bottom
-  const fogGrad=ctx.createLinearGradient(0,H-90,0,H);
-  fogGrad.addColorStop(0,'rgba(80,10,10,0)');
-  fogGrad.addColorStop(1,'rgba(80,10,10,0.32)');
-  ctx.fillStyle=fogGrad;
-  ctx.fillRect(0,H-90,W,90);
-
-  // Ground line (dark basalt floor)
+  // Lava floor
   const gndY=wy(GROUND_Y);
-  ctx.fillStyle='#1a0404';
-  ctx.fillRect(0,gndY,W,H-gndY);
-  // Brick lines on ground
-  ctx.strokeStyle='rgba(80,20,20,0.35)';
-  ctx.lineWidth=1;
-  const brickW=64, brickH=20;
-  const bOff=(camX*1.0)%brickW;
-  for(let row=0;row*brickH<H-gndY;row++) {
-    const ry=gndY+row*brickH;
-    const xShift=row%2===0?0:brickW/2;
-    for(let col=-1;col<Math.ceil(W/brickW)+2;col++) {
-      ctx.strokeRect(col*brickW+xShift-bOff,ry,brickW,brickH);
+  const lavaGrad=ctx.createLinearGradient(0,gndY,0,H);
+  lavaGrad.addColorStop(0,'#3d0800'); lavaGrad.addColorStop(0.2,'#280400'); lavaGrad.addColorStop(1,'#100100');
+  ctx.fillStyle=lavaGrad; ctx.fillRect(0,gndY,W,H-gndY);
+  // Animated lava cracks
+  const crackT=now*0.0004;
+  ctx.strokeStyle='rgba(255,80,0,0.42)'; ctx.lineWidth=1.5;
+  const crackOff=(camX*1.0)%96;
+  for(let row2=0;row2*28<H-gndY;row2++){
+    const ry2=gndY+row2*28+Math.sin(crackT+row2)*1.5;
+    const xsh2=row2%2===0?0:48;
+    for(let col2=-1;col2<Math.ceil(W/96)+2;col2++){
+      const cx4=col2*96+xsh2-crackOff;
+      ctx.beginPath();
+      ctx.moveTo(cx4,ry2); ctx.lineTo(cx4+22,ry2+6+Math.sin(crackT*2.1+col2)*3);
+      ctx.lineTo(cx4+48,ry2+2); ctx.lineTo(cx4+72,ry2+8+Math.sin(crackT*1.7+row2)*2);
+      ctx.lineTo(cx4+96,ry2+1); ctx.stroke();
     }
   }
-  // Ground top crimson line
-  ctx.fillStyle='rgba(200,30,30,0.5)';
-  ctx.fillRect(0,gndY,W,2);
+  // Glowing lava surface line
+  const lavaSurf=ctx.createLinearGradient(0,gndY-8,0,gndY+20);
+  lavaSurf.addColorStop(0,'rgba(255,100,0,0)'); lavaSurf.addColorStop(0.4,'rgba(255,80,0,0.55)');
+  lavaSurf.addColorStop(1,'rgba(180,30,0,0)');
+  ctx.fillStyle=lavaSurf; ctx.fillRect(0,gndY-8,W,28);
 
   function wx(x:number){ return x-camX; }
   function wy(y:number){ return y-camY; }
 
-  // ── ULTRAKILL-style Platforms ──
+  // ── Magma Rock Platforms ──
   for(const plat of gs.platforms) {
     const px=wx(plat.x), py=wy(plat.y);
-    // Shadow/drip below
-    const drip=ctx.createLinearGradient(0,py+plat.h,0,py+plat.h+18);
-    drip.addColorStop(0,'rgba(160,20,20,0.35)');
-    drip.addColorStop(1,'rgba(160,20,20,0)');
-    ctx.fillStyle=drip;
-    ctx.fillRect(px,py+plat.h,plat.w,18);
-    // Main body: dark basalt
+    const seed=plat.id*13.7;
+    const pulse=0.6+Math.sin(now*0.002+seed)*0.4;
+    // Lava drip underneath
+    const drip=ctx.createLinearGradient(0,py+plat.h,0,py+plat.h+22);
+    drip.addColorStop(0,`rgba(255,80,0,${0.5*pulse})`);
+    drip.addColorStop(0.4,`rgba(200,40,0,${0.28*pulse})`);
+    drip.addColorStop(1,'rgba(100,10,0,0)');
+    ctx.fillStyle=drip; ctx.fillRect(px-2,py+plat.h-2,plat.w+4,24);
+    // Rock body
     const pbody=ctx.createLinearGradient(0,py,0,py+plat.h);
-    pbody.addColorStop(0,'#2c1010');
-    pbody.addColorStop(1,'#1a0808');
-    ctx.fillStyle=pbody;
-    ctx.fillRect(px,py+2,plat.w,plat.h-2);
-    // Horizontal brick lines on platform body
-    ctx.strokeStyle='rgba(100,30,30,0.4)';
-    ctx.lineWidth=1;
-    for(let r=1;r*6<plat.h;r++) {
-      ctx.beginPath(); ctx.moveTo(px,py+2+r*6); ctx.lineTo(px+plat.w,py+2+r*6); ctx.stroke();
+    pbody.addColorStop(0,'#1a0800'); pbody.addColorStop(0.5,'#0d0400'); pbody.addColorStop(1,'#080200');
+    ctx.fillStyle=pbody; ctx.fillRect(px,py+3,plat.w,plat.h-3);
+    // Glowing cracks
+    ctx.shadowColor='#ff5500'; ctx.shadowBlur=6*pulse;
+    ctx.strokeStyle=`rgba(255,${80+Math.round(pulse*60)},0,${0.7*pulse})`; ctx.lineWidth=1.5;
+    const cStep=Math.max(20,Math.floor(plat.w/5));
+    for(let ci=0;ci<plat.w;ci+=cStep){
+      ctx.beginPath();
+      ctx.moveTo(px+ci,py+4);
+      ctx.lineTo(px+ci+cStep*0.3,py+plat.h*0.5+Math.sin(seed+ci)*3);
+      ctx.lineTo(px+ci+cStep*0.65,py+plat.h*0.3+Math.cos(seed+ci*0.7)*2);
+      ctx.lineTo(px+ci+cStep,py+plat.h-3);
+      ctx.stroke();
     }
-    // Iconic ULTRAKILL white top edge
-    ctx.fillStyle='#ffffff';
-    ctx.fillRect(px,py,plat.w,3);
-    // Subtle inner shadow below white edge
-    const innerShadow=ctx.createLinearGradient(0,py+3,0,py+10);
-    innerShadow.addColorStop(0,'rgba(255,255,255,0.1)');
-    innerShadow.addColorStop(1,'rgba(0,0,0,0)');
-    ctx.fillStyle=innerShadow;
-    ctx.fillRect(px,py+3,plat.w,7);
+    ctx.shadowBlur=0;
+    // Glowing top edge gradient
+    const topG=ctx.createLinearGradient(0,py,0,py+6);
+    topG.addColorStop(0,`rgba(255,${120+Math.round(pulse*80)},0,${0.85*pulse})`);
+    topG.addColorStop(1,'rgba(180,40,0,0)');
+    ctx.fillStyle=topG; ctx.fillRect(px,py,plat.w,6);
+    // Bright molten top line
+    ctx.shadowColor='#ff8800'; ctx.shadowBlur=8*pulse;
+    ctx.fillStyle=`rgba(255,${150+Math.round(pulse*60)},${20+Math.round(pulse*30)},0.9)`;
+    ctx.fillRect(px,py,plat.w,2);
+    ctx.shadowBlur=0;
   }
+
+  // ── Blast rings ──
+  for(const bl of gs.blasts) {
+    const blx=wx(bl.x), bly=wy(bl.y);
+    ctx.globalAlpha=bl.t*0.85;
+    ctx.strokeStyle=`rgba(255,${Math.round(160*bl.t+60)},${Math.round(40*bl.t)},1)`;
+    ctx.lineWidth=3+bl.t*5; ctx.shadowColor='#ff8800'; ctx.shadowBlur=22;
+    ctx.beginPath(); ctx.arc(blx,bly,bl.r,0,Math.PI*2); ctx.stroke();
+    if(bl.r>20){
+      ctx.globalAlpha=bl.t*0.35;
+      ctx.strokeStyle='rgba(255,255,180,0.9)'; ctx.lineWidth=1.5; ctx.shadowColor='#ffffaa';
+      ctx.beginPath(); ctx.arc(blx,bly,bl.r*0.55,0,Math.PI*2); ctx.stroke();
+    }
+    ctx.shadowBlur=0;
+  }
+  ctx.globalAlpha=1;
 
   // ── Particles ──
   for(const part of gs.particles) {
@@ -2083,7 +2211,21 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
   // ── Bullets ──
   for(const b of gs.bullets) {
     const bsx=wx(b.x+b.w/2), bsy=wy(b.y+b.h/2);
-    if(b.btype==='grenade') {
+    if(b.btype==='missile') {
+      const angle=Math.atan2(b.vy,b.vx);
+      ctx.save(); ctx.translate(bsx,bsy); ctx.rotate(angle);
+      const trail=ctx.createLinearGradient(-28,0,2,0);
+      trail.addColorStop(0,'rgba(255,80,0,0)');
+      trail.addColorStop(0.6,'rgba(255,160,0,0.85)');
+      trail.addColorStop(1,'rgba(255,230,80,0.7)');
+      ctx.fillStyle=trail; ctx.shadowColor='#ff8800'; ctx.shadowBlur=18;
+      ctx.fillRect(-26,-5,24,10);
+      ctx.fillStyle='#dddddd'; ctx.shadowColor='#ffffff'; ctx.shadowBlur=4;
+      ctx.fillRect(-6,-4,18,8);
+      ctx.fillStyle='#ff3300'; ctx.shadowColor='#ff4400'; ctx.shadowBlur=10;
+      ctx.beginPath(); ctx.moveTo(12,-4); ctx.lineTo(20,0); ctx.lineTo(12,4); ctx.closePath(); ctx.fill();
+      ctx.shadowBlur=0; ctx.restore();
+    } else if(b.btype==='grenade') {
       ctx.fillStyle='#55ff00'; ctx.shadowColor='#88ff00'; ctx.shadowBlur=10;
       ctx.beginPath(); ctx.arc(bsx,bsy,6,0,Math.PI*2); ctx.fill();
       if(b.fuse>0) {
