@@ -33,7 +33,7 @@ args = "PORT=22152 BASE_PATH=/ pnpm --filter @workspace/shooter-game run dev"
 waitForPort = 22152
 
 [agent]
-stack = "PNPM_WORKSPACE"
+stack = "BEST_EFFORT_FALLBACK"
 expertMode = true
 
 [postMerge]
