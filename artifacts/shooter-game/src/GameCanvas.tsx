@@ -272,23 +272,37 @@ function initGame(): GS {
 // ─── MAIN GAME CANVAS ────────────────────────────────────────────────────────
 export default function GameCanvas() {
   const canvasRef=useRef<HTMLCanvasElement>(null);
+  const containerRef=useRef<HTMLDivElement>(null);
   const gsRef=useRef<GS>(initGame());
   const keysRef=useRef(new Set<string>());
   const prevKeysRef=useRef(new Set<string>());
   const mouseRef=useRef({x:GW/2,y:GH/2,left:false,right:false,leftClick:false,rightClick:false});
   const [hud,setHud]=useState({score:0,hp:100,weapon:0,kills:0,bossHp:0,bossMaxHp:BOSS_HP,phase:'playing',bossSpawned:false});
+  const [focused,setFocused]=useState(false);
   const rafRef=useRef(0);
   const lastTimeRef=useRef(0);
 
   useEffect(()=>{
     const canvas=canvasRef.current;
-    if(!canvas) return;
+    const container=containerRef.current;
+    if(!canvas||!container) return;
     canvas.width=GW; canvas.height=GH;
     const ctx=canvas.getContext('2d')!;
 
-    // Key events
-    const onKeyDown=(e:KeyboardEvent)=>{ keysRef.current.add(e.code); e.preventDefault(); };
+    // Focus the container immediately so keyboard works without clicking
+    container.focus();
+    setFocused(true);
+
+    // Key events on the container div (focusable element)
+    const onKeyDown=(e:KeyboardEvent)=>{
+      keysRef.current.add(e.code);
+      // Prevent arrow keys / space from scrolling the page
+      if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+    };
     const onKeyUp=(e:KeyboardEvent)=>{ keysRef.current.delete(e.code); };
+    // Listen on both container AND window to catch all cases
+    container.addEventListener('keydown',onKeyDown);
+    container.addEventListener('keyup',onKeyUp);
     window.addEventListener('keydown',onKeyDown);
     window.addEventListener('keyup',onKeyUp);
 
@@ -300,6 +314,9 @@ export default function GameCanvas() {
     };
     const onMouseMove=(e:MouseEvent)=>{ const p=getPos(e); mouseRef.current.x=p.x; mouseRef.current.y=p.y; };
     const onMouseDown=(e:MouseEvent)=>{
+      // Refocus every time the user clicks, ensuring keyboard capture
+      container.focus();
+      setFocused(true);
       if(e.button===0){ mouseRef.current.left=true; mouseRef.current.leftClick=true; }
       if(e.button===2){ mouseRef.current.right=true; mouseRef.current.rightClick=true; }
       e.preventDefault();
@@ -697,6 +714,8 @@ export default function GameCanvas() {
 
     return ()=>{
       cancelAnimationFrame(rafRef.current);
+      container.removeEventListener('keydown',onKeyDown);
+      container.removeEventListener('keyup',onKeyUp);
       window.removeEventListener('keydown',onKeyDown);
       window.removeEventListener('keyup',onKeyUp);
       canvas.removeEventListener('mousemove',onMouseMove);
@@ -706,8 +725,20 @@ export default function GameCanvas() {
   },[]);
 
   return (
-    <div style={{position:'relative',width:'100vw',height:'100vh',overflow:'hidden',background:'#0a0a1a'}}>
+    <div
+      ref={containerRef}
+      tabIndex={0}
+      style={{position:'relative',width:'100vw',height:'100vh',overflow:'hidden',background:'#0a0a1a',outline:'none'}}
+    >
       <canvas ref={canvasRef} style={{width:'100%',height:'100%',display:'block',cursor:'crosshair'}} />
+      {/* "Click to play" hint shown until first interaction */}
+      {!focused && (
+        <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
+          <div style={{color:'#aaa',fontSize:18,border:'2px solid #555',padding:'12px 28px',borderRadius:6,background:'rgba(0,0,0,0.6)'}}>
+            Click to activate controls
+          </div>
+        </div>
+      )}
 
       {/* HUD */}
       <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,pointerEvents:'none',fontFamily:'Courier New,monospace'}}>
