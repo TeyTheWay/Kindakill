@@ -88,6 +88,7 @@ interface GS {
   blasts: Blast[];
   score: number;
   kills: number;
+  totalKills: number;
   bossSpawned: boolean;
   camX: number; camY: number;
   phase: string;
@@ -233,6 +234,7 @@ function spawnEnemyWave(gs:GS) {
 
 function spawnBoss(gs:GS) {
   gs.bossSpawned=true;
+  gs.kills=0;
   const spawnX=gs.player.x+GW*0.8;
   gs.boss={
     x:spawnX,y:GROUND_Y-PH*1.3,vx:0,vy:0,
@@ -369,7 +371,7 @@ function initGame(): GS {
   };
   return {
     player, enemies:[], boss:null, bullets:[], platforms:plats, particles:[], blasts:[],
-    score:0, kills:0, bossSpawned:false,
+    score:0, kills:0, totalKills:0, bossSpawned:false,
     camX:0, camY:0,
     phase:'playing',
     nextPlatId:10, nextEnemyId:0, nextBulletId:0, nextParticleId:0,
@@ -385,7 +387,7 @@ export default function GameCanvas() {
   const keysRef=useRef(new Set<string>());
   const prevKeysRef=useRef(new Set<string>());
   const mouseRef=useRef({x:GW/2,y:GH/2,left:false,right:false,leftClick:false,rightClick:false,grenadeChargeDur:0});
-  const [hud,setHud]=useState({score:0,hp:100,weapon:0,kills:0,bossHp:0,bossMaxHp:BOSS_HP,phase:'playing',bossSpawned:false});
+  const [hud,setHud]=useState({score:0,hp:100,weapon:0,kills:0,totalKills:0,bossHp:0,bossMaxHp:BOSS_HP,phase:'playing',bossSpawned:false});
   const [focused,setFocused]=useState(false);
   const rafRef=useRef(0);
   const lastTimeRef=useRef(0);
@@ -888,7 +890,7 @@ export default function GameCanvas() {
         for(const e of gs.enemies) {
           if(e.dead || e.hp<=0) {
             if(!e.dead){
-              gs.score+=e.pts; gs.kills++;
+              gs.score+=e.pts; gs.kills++; gs.totalKills++;
               spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,14,200,50,50,230);
               p.hp=Math.min(p.maxHp,p.hp+30); // health on kill
             }
@@ -1136,7 +1138,7 @@ export default function GameCanvas() {
               e.hp-=b.dmg;
               spawnParticles(gs,b.x,b.y,4,200,50,50,150);
               b.hp=0; hitSomething=true;
-              if(e.hp<=0){ e.dead=true; gs.score+=e.pts; gs.kills++; p.hp=Math.min(p.maxHp,p.hp+30); spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,12,200,50,50,220); }
+              if(e.hp<=0){ e.dead=true; gs.score+=e.pts; gs.kills++; gs.totalKills++; p.hp=Math.min(p.maxHp,p.hp+30); spawnParticles(gs,e.x+e.w/2,e.y+e.h/2,12,200,50,50,220); }
               break;
             }
           }
@@ -1189,7 +1191,7 @@ export default function GameCanvas() {
       // ── HUD SYNC ─────────────────────────────────────────────────────
       setHud({
         score:gs.score, hp:p.hp, weapon:p.weapon,
-        kills:gs.kills, bossHp:boss?boss.hp:0, bossMaxHp:BOSS_HP,
+        kills:gs.kills, totalKills:gs.totalKills, bossHp:boss?boss.hp:0, bossMaxHp:BOSS_HP,
         phase:gs.phase, bossSpawned:gs.bossSpawned,
       });
 
@@ -1235,6 +1237,9 @@ export default function GameCanvas() {
         </div>
         <div style={{position:'absolute',top:44,left:20,color:'#aaa',fontSize:14}}>
           KILLS: {hud.kills} {hud.bossSpawned?'':'/ '+BOSS_SPAWN_KILLS+' to boss'}
+        </div>
+        <div style={{position:'absolute',top:64,left:20,color:'#888',fontSize:13}}>
+          TOTAL: {hud.totalKills}
         </div>
 
         {/* HP bar bottom-left */}
@@ -1284,7 +1289,7 @@ export default function GameCanvas() {
           <div style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.7)'}}>
             <div style={{color:'#ff2222',fontSize:64,fontWeight:'bold',textShadow:'0 0 30px #f00',marginBottom:16}}>YOU DIED</div>
             <div style={{color:'#888',fontSize:22,marginBottom:8}}>Score: {hud.score}</div>
-            <div style={{color:'#aaa',fontSize:22,marginBottom:32}}>Kills: {hud.kills}</div>
+            <div style={{color:'#aaa',fontSize:22,marginBottom:32}}>Total Kills: {hud.totalKills}</div>
             <div style={{color:'#fff',fontSize:20,border:'2px solid #fff',padding:'10px 32px',borderRadius:4,animation:'pulse 1s infinite',textShadow:'0 0 8px #fff'}}>
               Press R to Restart
             </div>
@@ -1297,7 +1302,7 @@ export default function GameCanvas() {
             <div style={{color:'#ffd700',fontSize:52,fontWeight:'bold',textShadow:'0 0 30px #ffd700',marginBottom:16}}>VICTORY!</div>
             <div style={{color:'#aaa',fontSize:22,marginBottom:8}}>Mirror Knight Defeated</div>
             <div style={{color:'#fff',fontSize:26,marginBottom:8}}>Final Score: {hud.score}</div>
-            <div style={{color:'#ccc',fontSize:22,marginBottom:32}}>Kills: {hud.kills}</div>
+            <div style={{color:'#ccc',fontSize:22,marginBottom:32}}>Total Kills: {hud.totalKills}</div>
             <div style={{color:'#ffd700',fontSize:20,border:'2px solid #ffd700',padding:'10px 32px',borderRadius:4,textShadow:'0 0 8px #ffd700'}}>
               Press R to Play Again
             </div>
