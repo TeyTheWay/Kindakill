@@ -22,7 +22,7 @@ const WEAPONS = [
   { name: 'GRENADE',  cd: 0.85, dmg: 55, spd: 380, pellets: 1, spread: 0,    fuse: 2.8 },
   { name: 'MISSILE',  cd: 1.20, dmg:100, spd: 520, pellets: 1, spread: 0,    fuse: 0 },
 ];
-const GRENADE_RADIUS = 384;
+const GRENADE_RADIUS = 192;
 const MISSILE_RADIUS = 640;
 const GRENADE_MAX_RANGE = 1200;
 
@@ -951,11 +951,12 @@ export default function GameCanvas() {
         }
         if(Math.random()<0.01) { boss.grapple=false; boss.grappleOn=false; }
 
-        // Shoot
+        // Shoot (no shotgun; pistol does 10 dmg)
         const shootCd=boss.phase===3?0.35:boss.phase===2?0.65:0.9;
         if(boss.shootCd<=0) {
-          const weaponChoice=boss.phase===3?Math.floor(Math.random()*3):boss.phase===2?Math.floor(Math.random()*2):0;
+          const weaponChoice=boss.phase===3?(Math.random()<0.5?0:2):boss.phase===2?(Math.random()<0.6?0:2):0;
           spawnBullet(gs,bx,by,dxp,dyp,false,weaponChoice,-1);
+          if(weaponChoice===0) gs.bullets[gs.bullets.length-1].dmg=10;
           boss.shootCd=shootCd;
           spawnParticles(gs,bx,by,3,255,60,60,100);
         }
@@ -984,6 +985,7 @@ export default function GameCanvas() {
           gs.score+=1000;
           gs.bossSpawned=false;
           gs.spawnTimer=4;
+          p.maxHp=150; p.hp=150;
           explodeMissile(gs,bx,by,true);
           spawnParticles(gs,bx,by,40,255,215,0,420);
         }
@@ -1018,6 +1020,15 @@ export default function GameCanvas() {
           }
           const nlen=Math.hypot(nearDx,nearDy)||1;
           b.vx+=nearDx/nlen*1800*dt; b.vy+=nearDy/nlen*1800*dt;
+          // Wall avoidance: push away from nearby platforms
+          const mcx=b.x+b.w/2, mcy=b.y+b.h/2;
+          for(const plat of gs.platforms) {
+            const pcx=plat.x+plat.w/2, pcy=plat.y+plat.h/2;
+            const repDx=mcx-pcx, repDy=mcy-pcy;
+            const repD=Math.hypot(repDx,repDy)||1;
+            const avoidRange=180;
+            if(repD<avoidRange){ const f=(1-repD/avoidRange)*4000; b.vx+=repDx/repD*f*dt; b.vy+=repDy/repD*f*dt; }
+          }
           const mspd=Math.hypot(b.vx,b.vy);
           if(mspd>WEAPONS[3].spd*1.5){ b.vx=b.vx/mspd*WEAPONS[3].spd*1.5; b.vy=b.vy/mspd*WEAPONS[3].spd*1.5; }
         }
@@ -1047,6 +1058,15 @@ export default function GameCanvas() {
             b.vy=Math.abs(b.vy)>80?-b.vy*0.5:0;
             b.vx*=0.78;
           }
+        } else if(b.btype==='missile') {
+          // Missiles explode on platform hit
+          for(const plat of gs.platforms) {
+            if(aabb(b.x,b.y,b.w,b.h,plat.x,plat.y,plat.w,plat.h)) {
+              explodeMissile(gs,b.x+b.w/2,b.y+b.h/2,b.fromPlayer);
+              b.hp=0; break;
+            }
+          }
+          if(b.hp<=0) continue;
         } else if(b.btype!=='laser') {
           // Regular bullets (pistol, shotgun, enemy) stop on platforms
           for(const plat of gs.platforms) {
@@ -1068,7 +1088,10 @@ export default function GameCanvas() {
         }
 
         // Bullet lifetime (off screen)
-        if(b.x<gs.camX-200 || b.x>gs.camX+GW+200 || b.y<-200 || b.y>GH+200) { b.hp=0; continue; }
+        if(b.x<gs.camX-200 || b.x>gs.camX+GW+200 || b.y<-200 || b.y>GH+200) {
+          if(b.btype==='missile') explodeMissile(gs,b.x+b.w/2,b.y+b.h/2,b.fromPlayer);
+          b.hp=0; continue;
+        }
 
         // Hit player
         if(!b.fromPlayer && p.hp>0 && !p.dead) {
