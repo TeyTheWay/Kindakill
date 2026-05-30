@@ -93,6 +93,7 @@ interface GS {
   spawnTimer: number;
   worldRight: number;
   grenadeCharge: number;
+  aimX: number; aimY: number;
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -321,7 +322,7 @@ function initGame(): GS {
     camX:0, camY:0,
     phase:'playing',
     nextPlatId:10, nextEnemyId:0, nextBulletId:0, nextParticleId:0,
-    spawnTimer:3, worldRight:1200, grenadeCharge:0,
+    spawnTimer:3, worldRight:1200, grenadeCharge:0, aimX:0, aimY:0,
   };
 }
 
@@ -448,6 +449,7 @@ export default function GameCanvas() {
         if(p.shootCd>0) p.shootCd-=dt;
         const worldMouseX=mouse.x+gs.camX;
         const worldMouseY=mouse.y+gs.camY;
+        gs.aimX=worldMouseX; gs.aimY=worldMouseY;
         const pcx=p.x+p.w/2, pcy=p.y+p.h/2;
 
         if(p.weapon===2) {
@@ -924,9 +926,25 @@ export default function GameCanvas() {
         // Platform collision — grenades bounce; all other bullets are blocked
         if(b.btype==='grenade') {
           for(const plat of gs.platforms) {
-            if(aabb(b.x,b.y,b.w,b.h,plat.x,plat.y,plat.w,plat.h) && b.bounced<3) {
-              b.vy*=-0.55; b.vx*=0.75; b.bounced++;
+            if(aabb(b.x,b.y,b.w,b.h,plat.x,plat.y,plat.w,plat.h)) {
+              const prevY=b.y-b.vy*dt;
+              if(prevY+b.h<=plat.y+6) {
+                b.y=plat.y-b.h;
+                b.vy=Math.abs(b.vy)>80?-b.vy*0.5:0;
+                b.vx*=0.78;
+              } else {
+                b.x=b.vx>0?plat.x-b.w:plat.x+plat.w;
+                b.vx*=-0.5;
+              }
+              b.bounced++;
+              break;
             }
+          }
+          // Hard floor clamp — grenades never fall through the ground
+          if(b.y+b.h>GROUND_Y) {
+            b.y=GROUND_Y-b.h;
+            b.vy=Math.abs(b.vy)>80?-b.vy*0.5:0;
+            b.vx*=0.78;
           }
         } else if(b.btype!=='laser') {
           // Regular bullets (pistol, shotgun, enemy) stop on platforms
@@ -1242,7 +1260,7 @@ function drawV1(ctx:CanvasRenderingContext2D, p:Player, camX:number, camY:number
 
   // ── Back leg (behind body) ──
   ctx.save();
-  ctx.translate(-3, 0);
+  ctx.translate(-3,-38);
   ctx.rotate((-legBk+airLeg)*Math.PI/180);
   ctx.fillStyle=clothDk;
   ctx.fillRect(-4,-2,7,20); // thigh
@@ -1281,7 +1299,7 @@ function drawV1(ctx:CanvasRenderingContext2D, p:Player, camX:number, camY:number
 
   // ── Front leg ──
   ctx.save();
-  ctx.translate(3,0);
+  ctx.translate(3,-38);
   ctx.rotate((legFwd+airLeg)*Math.PI/180);
   ctx.fillStyle=cloth;
   ctx.fillRect(-4,-2,7,20);
@@ -2104,6 +2122,52 @@ function render(ctx:CanvasRenderingContext2D, gs:GS) {
       ctx.beginPath(); ctx.arc(bsx,bsy,5,0,Math.PI*2); ctx.fill();
     }
     ctx.shadowBlur=0;
+  }
+
+  // ── Grenade trajectory preview ──
+  if(!gs.player.dead && gs.player.weapon===2) {
+    const pct=Math.max(0.25, gs.grenadeCharge);
+    const throwSpd=220+pct*480;
+    const pcx=gs.player.x+gs.player.w/2;
+    const pcy=gs.player.y+gs.player.h/2;
+    const rdx=gs.aimX-pcx, rdy=gs.aimY-pcy;
+    const rlen=Math.hypot(rdx,rdy)||1;
+    const nx2=rdx/rlen, ny2=rdy/rlen;
+    let tx=pcx, ty=pcy;
+    let tvx=nx2*throwSpd, tvy=ny2*throwSpd;
+    const stepDt=0.05;
+    const maxSteps=Math.ceil(WEAPONS[2].fuse/stepDt)+2;
+    const alpha=0.3+pct*0.5;
+    ctx.save();
+    ctx.setLineDash([5,7]);
+    ctx.strokeStyle=`rgba(120,255,60,${alpha})`;
+    ctx.lineWidth=1.5;
+    ctx.shadowColor='#88ff44'; ctx.shadowBlur=5;
+    ctx.beginPath();
+    ctx.moveTo(wx(tx),wy(ty));
+    let landX=tx, landY=ty;
+    for(let i=0;i<maxSteps;i++) {
+      tvy+=GRAVITY*0.55*stepDt;
+      tx+=tvx*stepDt; ty+=tvy*stepDt;
+      let landed=false;
+      for(const plat of gs.platforms) {
+        if(tx>=plat.x && tx<=plat.x+plat.w && ty+4>=plat.y && ty<=plat.y+plat.h) {
+          ty=plat.y-4; landed=true; break;
+        }
+      }
+      if(ty+8>=GROUND_Y){ ty=GROUND_Y-8; landed=true; }
+      ctx.lineTo(wx(tx),wy(ty));
+      landX=tx; landY=ty;
+      if(landed) break;
+    }
+    ctx.stroke();
+    ctx.setLineDash([]); ctx.shadowBlur=0;
+    // Landing marker
+    ctx.fillStyle=`rgba(120,255,60,${alpha+0.2})`;
+    ctx.shadowColor='#88ff44'; ctx.shadowBlur=8;
+    ctx.beginPath(); ctx.arc(wx(landX),wy(landY),5,0,Math.PI*2); ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.restore();
   }
 
   // ── Grenade charge indicator ──
